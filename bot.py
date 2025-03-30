@@ -1,362 +1,904 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # GPU kullanımını devre dışı bırak
-
-import telebot
-from telebot.handler_backends import State, StatesGroup
-from telebot.storage import StateMemoryStorage
-from opennsfw2 import predict_image
-import cv2
-import numpy as np
-from PIL import Image
-from io import BytesIO
-import requests
-import tempfile
+import re
 import logging
-from datetime import datetime
+import datetime
 import time
-from collections import defaultdict
-import threading
+import json
+import sqlite3
+import asyncio
+import io
+from collections import Counter
+from typing import Dict, List, Tuple, Optional, Union
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import emoji
+import pytz
+from wordcloud import WordCloud
+from nltk.tokenize import word_tokenize
+import nltk
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
+from telegram.constants import ParseMode
+
+# =================== TEMEL AYARLAR ===================
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+DB_PATH = "trend_analysis.db"
+TZ = pytz.timezone('Europe/Istanbul')  # Türkiye zaman dilimi
+VERSION = "1.0.0"
 
 # Loglama ayarları
 logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    format='%(asctime)s UTC - User: theburakct2 - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    filename='nsfw_bot.log'
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Bot yapılandırması
-TOKEN = '7209534643:AAEVFa1MeiZ-qKG2dj9eJ0skJKOjsNqnAhI'
-NSFW_THRESHOLD = 0.89
-VIDEO_FRAME_THRESHOLD = 0.80
-FRAME_SKIP = 24
+# =================== YARDIMCI FONKSİYONLAR ===================
 
-# Bot oluşturma
-state_storage = StateMemoryStorage()
-bot = telebot.TeleBot(TOKEN, state_storage=state_storage)
+def load_turkish_stop_words():
+    """Türkçe durak kelimeleri yükle veya oluştur"""
+    try:
+        with open('turkish_stop_words.txt', 'r', encoding='utf-8') as f:
+            return set(line.strip() for line in f)
+    except FileNotFoundError:
+        # Temel Türkçe durak kelimeler
+        stop_words = {
+            "ve", "ile", "bu", "bir", "da", "de", "için", "ama", "olarak", "çok", 
+            "daha", "böyle", "şöyle", "ancak", "fakat", "ki", "ya", "mi", "mı", 
+            "mu", "mü", "ne", "nasıl", "kadar", "gibi", "her", "biz", "ben", "sen", 
+            "o", "onlar", "siz", "bizim", "benim", "senin", "onun", "sizin", "onların",
+            "şey", "şu", "şunlar", "bunlar", "evet", "hayır", "tamam", "yok", 
+            "var", "değil", "olur", "olmaz", "olmak", "yapmak", "etmek", "birşey",
+            "bir", "şey", "ise", "veya"
+        }
+        with open('turkish_stop_words.txt', 'w', encoding='utf-8') as f:
+            for word in sorted(stop_words):
+                f.write(f"{word}\n")
+        return stop_words
 
-# Admin listesi
-ADMIN_IDS = [7067213241]
-
-# Kullanıcı medya takibi için global sözlük
-user_media_tracker = defaultdict(list)
-# Format: {user_id: [(message_id, timestamp, chat_id), ...]}
-
-class AdminStates(StatesGroup):
-    setting_threshold = State()
-
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
-def check_and_delete_user_media(user_id, chat_id):
-    """Kullanıcının son mesajlarını kontrol et ve gerekirse toplu sil"""
-    current_time = time.time()
-    deletion_window = 30  # Son 30 saniye içindeki mesajları kontrol et
+# Veritabanı yardımcı fonksiyonları
+def init_database():
+    """Veritabanını ve gerekli tabloları oluştur"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
     
-    # Kullanıcının son mesajlarını al
-    user_messages = user_media_tracker[user_id]
-    recent_messages = [
-        msg for msg in user_messages 
-        if current_time - msg[1] <= deletion_window and msg[2] == chat_id
+    # Mesajlar tablosu
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        message_text TEXT,
+        message_date TIMESTAMP,
+        has_hashtags INTEGER DEFAULT 0,
+        has_mentions INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    # Hashtag tablosu
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS hashtags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        chat_id INTEGER NOT NULL,
+        hashtag TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES messages (id)
+    )
+    ''')
+    
+    # Mention tablosu
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS mentions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        chat_id INTEGER NOT NULL,
+        mentioned_username TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES messages (id)
+    )
+    ''')
+    
+    # Kelime tablosu
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS words (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        chat_id INTEGER NOT NULL,
+        word TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES messages (id)
+    )
+    ''')
+    
+    # Grup ayarları tablosu
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_settings (
+        chat_id INTEGER PRIMARY KEY,
+        chat_title TEXT,
+        auto_report INTEGER DEFAULT 0,
+        report_time TEXT DEFAULT "20:00",
+        tracking_enabled INTEGER DEFAULT 1,
+        admin_user_ids TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    logger.info("Veritabanı başarıyla oluşturuldu")
+
+def save_message(update: Update):
+    """Mesajı veritabanına kaydet ve hashtag/mention bilgilerini çıkar"""
+    message = update.message
+    
+    if not message or not message.text:
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Mesaj tarihini Türkiye saati olarak ayarla
+    message_date = datetime.datetime.fromtimestamp(message.date.timestamp(), TZ)
+    
+    # Mesajı kaydet
+    cursor.execute('''
+    INSERT INTO messages (chat_id, user_id, username, first_name, message_text, message_date, 
+                         has_hashtags, has_mentions)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        message.chat_id, 
+        message.from_user.id, 
+        message.from_user.username, 
+        message.from_user.first_name,
+        message.text, 
+        message_date.strftime('%Y-%m-%d %H:%M:%S'),
+        1 if '#' in message.text else 0,
+        1 if '@' in message.text else 0
+    ))
+    
+    message_id = cursor.lastrowid
+    
+    # Hashtag'leri çıkar ve kaydet
+    hashtags = re.findall(r'#(\w+)', message.text)
+    for hashtag in hashtags:
+        cursor.execute('''
+        INSERT INTO hashtags (message_id, chat_id, hashtag)
+        VALUES (?, ?, ?)
+        ''', (message_id, message.chat_id, hashtag.lower()))
+    
+    # Mention'ları çıkar ve kaydet
+    mentions = re.findall(r'@(\w+)', message.text)
+    for mention in mentions:
+        cursor.execute('''
+        INSERT INTO mentions (message_id, chat_id, mentioned_username)
+        VALUES (?, ?, ?)
+        ''', (message_id, message.chat_id, mention.lower()))
+    
+    # Kelimeleri çıkar ve kaydet
+    stop_words = load_turkish_stop_words()
+    
+    # Emoji ve özel karakterleri temizle
+    text = emoji.replace_emoji(message.text, replace='')
+    text = re.sub(r'[^\w\s]', '', text)
+    
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    
+    words = word_tokenize(text.lower(), language='turkish')
+    for word in words:
+        if (len(word) > 2 and  # Çok kısa kelimeleri atla
+            word not in stop_words and  # Durak kelimeleri atla
+            not word.isdigit() and  # Sayıları atla
+            not re.match(r'^[0-9]+$', word)):  # Sadece sayılardan oluşan kelimeleri atla
+            cursor.execute('''
+            INSERT INTO words (message_id, chat_id, word)
+            VALUES (?, ?, ?)
+            ''', (message_id, message.chat_id, word.lower()))
+    
+    conn.commit()
+    conn.close()
+
+def update_chat_settings(chat_id: int, chat_title: str, admin_ids: List[int] = None):
+    """Grup ayarlarını güncelle veya oluştur"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT chat_id FROM chat_settings WHERE chat_id = ?', (chat_id,))
+    exists = cursor.fetchone()
+    
+    if exists:
+        if admin_ids:
+            cursor.execute('''
+            UPDATE chat_settings 
+            SET chat_title = ?, admin_user_ids = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ?
+            ''', (chat_title, json.dumps(admin_ids), chat_id))
+        else:
+            cursor.execute('''
+            UPDATE chat_settings 
+            SET chat_title = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ?
+            ''', (chat_title, chat_id))
+    else:
+        admin_ids_json = json.dumps(admin_ids) if admin_ids else '[]'
+        cursor.execute('''
+        INSERT INTO chat_settings (chat_id, chat_title, admin_user_ids)
+        VALUES (?, ?, ?)
+        ''', (chat_id, chat_title, admin_ids_json))
+    
+    conn.commit()
+    conn.close()
+
+# =================== TREND ANALİZİ FONKSİYONLARI ===================
+
+def get_trend_data(chat_id: Optional[int] = None, period: str = 'daily', limit: int = 10):
+    """Belirli bir dönem için trend verilerini al"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    today = datetime.datetime.now(TZ).date()
+    
+    if period == 'daily':
+        start_date = today
+    elif period == 'weekly':
+        start_date = today - datetime.timedelta(days=7)
+    elif period == 'monthly':
+        start_date = today - datetime.timedelta(days=30)
+    elif period == 'total':
+        start_date = None
+    else:
+        start_date = today  # Varsayılan olarak günlük
+    
+    # Trend verilerini topla
+    trend_data = {
+        'words': [],
+        'hashtags': [],
+        'mentions': [],
+        'active_users': [],
+        'message_count': 0
+    }
+    
+    # Tarih filtresi oluştur
+    date_filter = ''
+    params = []
+    
+    if chat_id:
+        date_filter += 'chat_id = ?'
+        params.append(chat_id)
+    
+    if start_date:
+        if params:
+            date_filter += ' AND '
+        date_filter += 'DATE(message_date) >= ?'
+        params.append(start_date.strftime('%Y-%m-%d'))
+    
+    if date_filter:
+        date_filter = 'WHERE ' + date_filter
+    
+    # Toplam mesaj sayısı
+    cursor.execute(f'SELECT COUNT(*) FROM messages {date_filter}', params)
+    trend_data['message_count'] = cursor.fetchone()[0]
+    
+    # En çok kullanılan kelimeler
+    cursor.execute(f'''
+    SELECT word, COUNT(*) as count 
+    FROM words 
+    {date_filter} 
+    GROUP BY word 
+    ORDER BY count DESC 
+    LIMIT ?
+    ''', params + [limit])
+    trend_data['words'] = [{'word': row[0], 'count': row[1]} for row in cursor.fetchall()]
+    
+    # En çok kullanılan hashtag'ler
+    cursor.execute(f'''
+    SELECT hashtag, COUNT(*) as count 
+    FROM hashtags 
+    {date_filter} 
+    GROUP BY hashtag 
+    ORDER BY count DESC 
+    LIMIT ?
+    ''', params + [limit])
+    trend_data['hashtags'] = [{'hashtag': row[0], 'count': row[1]} for row in cursor.fetchall()]
+    
+    # En çok mention edilen kullanıcılar
+    cursor.execute(f'''
+    SELECT mentioned_username, COUNT(*) as count 
+    FROM mentions 
+    {date_filter} 
+    GROUP BY mentioned_username 
+    ORDER BY count DESC 
+    LIMIT ?
+    ''', params + [limit])
+    trend_data['mentions'] = [{'username': row[0], 'count': row[1]} for row in cursor.fetchall()]
+    
+    # En aktif kullanıcılar
+    cursor.execute(f'''
+    SELECT username, first_name, COUNT(*) as count 
+    FROM messages 
+    {date_filter} 
+    GROUP BY user_id 
+    ORDER BY count DESC 
+    LIMIT ?
+    ''', params + [limit])
+    trend_data['active_users'] = [
+        {'username': row[0] or row[1], 'count': row[2]} 
+        for row in cursor.fetchall()
     ]
     
-    # Eğer kullanıcı kısa sürede çok fazla uygunsuz içerik gönderdiyse
-    if len(recent_messages) >= 3:  # 30 saniye içinde 3 veya daha fazla uygunsuz içerik
-        try:
-            # Kullanıcının son 100 mesajını getir ve kontrol et
-            messages = bot.get_chat_history(chat_id, limit=100)
-            deleted_count = 0
-            
-            for message in messages:
-                if message.from_user.id == user_id:
-                    try:
-                        bot.delete_message(chat_id, message.message_id)
-                        deleted_count += 1
-                    except Exception as e:
-                        logger.error(f"Toplu mesaj silme hatası: {e}")
-            
-            # Kullanıcıyı uyar
-            warning_text = (
-                f"⚠️ @{message.from_user.username} çok sayıda uygunsuz içerik tespit edildi!\n"
-                f"🚫 Son mesajları toplu olarak silindi.\n"
-                f"📊 Silinen mesaj sayısı: {deleted_count}"
-            )
-            bot.send_message(chat_id, warning_text)
-            
-            # Kullanıcının takip listesini temizle
-            user_media_tracker[user_id].clear()
-            
-            # Log kaydı
-            current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-            logger.warning(
-                f"Toplu içerik silindi - "
-                f"Tarih: {current_time} UTC - "
-                f"Kullanıcı: {message.from_user.username} (ID: {user_id}), "
-                f"Silinen Mesaj Sayısı: {deleted_count}, "
-                f"Grup: {message.chat.title}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Toplu silme işlemi hatası: {e}")
+    conn.close()
+    return trend_data
 
-def process_image(image_data):
-    """Görüntüyü işle ve NSFW skorunu hesapla"""
-    try:
-        image = Image.open(BytesIO(image_data)).convert('RGB')
-        nsfw_score = predict_image(image)
-        return float(nsfw_score)
-    except Exception as e:
-        logger.error(f"Görüntü işleme hatası: {e}")
-        return 0.0
-
-def process_sticker(sticker_file_id):
-    """Çıkartmaları işle ve NSFW skorunu hesapla"""
-    try:
-        file_info = bot.get_file(sticker_file_id)
-        file_path = file_info.file_path
-        
-        if file_path.endswith('.webm'):
-            downloaded_file = bot.download_file(file_path)
-            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_file:
-                temp_file.write(downloaded_file)
-                temp_path = temp_file.name
-            
-            nsfw_score = predict_video(temp_path)
-            os.unlink(temp_path)
-            return float(nsfw_score)
-        else:
-            downloaded_file = bot.download_file(file_path)
-            nparr = np.frombuffer(downloaded_file, np.uint8)
-            img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if img_np is None:
-                logger.error("Çıkartma numpy array'e dönüştürülemedi")
-                return 0.0
-            
-            img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(img_rgb)
-            nsfw_score = predict_image(pil_image)
-            return float(nsfw_score)
-            
-    except Exception as e:
-        logger.error(f"Çıkartma işleme hatası: {e}")
-        return 0.0
-
-def predict_video(video_path):
-    """Video dosyasını frame frame işle"""
-    try:
-        cap = cv2.VideoCapture(video_path)
-        max_nsfw_score = 0.0
-        frame_count = 0
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            frame_count += 1
-            if frame_count % FRAME_SKIP != 0:
-                continue
-                
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_pil = Image.fromarray(frame_rgb)
-            score = float(predict_image(frame_pil))
-            max_nsfw_score = max(max_nsfw_score, score)
-            
-            if max_nsfw_score > VIDEO_FRAME_THRESHOLD:
-                break
-                
-        cap.release()
-        return max_nsfw_score
-    except Exception as e:
-        logger.error(f"Video işleme hatası: {e}")
-        return 0.0
-
-def delete_message_with_delay(chat_id, message_id):
-    """Mesajı 2 dakika sonra sil"""
-    try:
-        time.sleep(120)  # 120 saniye = 2 dakika bekle
-        bot.delete_message(chat_id, message_id)
-    except Exception as e:
-        logger.error(f"Mesaj silme hatası: {e}")
-
-def delayed_delete(chat_id, message_id):
-    """Mesaj silme işlemini ayrı bir thread'de başlat"""
-    thread = threading.Thread(target=delete_message_with_delay, args=(chat_id, message_id))
-    thread.start()
-
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if message.chat.type == 'private':
-        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-        add_group = telebot.types.InlineKeyboardButton(
-            "➕ Gruba Ekle", 
-            url=f"https://t.me/{bot.get_me().username}?startgroup=true"
-        )
-        markup.add(add_group)
-        
-        bot.reply_to(
-            message,
-            "🤖 *NSFW Kontrol Botu*'na Hoş Geldiniz!\n\n"
-            "Görevlerim:\n"
-            "• Fotoğraf, video ve çıkartmaları kontrol ederim\n"
-            "• Düzenlenen mesajları anında kontrol ederim\n"
-            "• Uygunsuz içerikleri tespit eder ve silerim\n"
-            "• Admin mesajları dahil tüm içerikleri kontrol ederim\n"
-            "• 7/24 aktif çalışırım\n\n"
-            "🛡 _Grubunuzun güvenliği için yönetici izinlerini vermeyi unutmayın_",
-            parse_mode='Markdown',
-            reply_markup=markup
-        )
-
-@bot.message_handler(commands=['status'])
-def send_status(message):
-    if is_admin(message.from_user.id):
-        bot.reply_to(message, 
-            f"Bot durumu:\n"
-            f"NSFW Eşiği: {NSFW_THRESHOLD}\n"
-            f"Video Kare Eşiği: {VIDEO_FRAME_THRESHOLD}\n"
-            f"Kare Atlama: her {FRAME_SKIP} karede bir")
-
-@bot.message_handler(commands=['set_threshold'])
-def set_threshold(message):
-    if is_admin(message.from_user.id):
-        bot.reply_to(message, 
-            "Yeni NSFW eşik değerini gönderin (0.0 - 1.0 arası):")
-        bot.set_state(message.from_user.id, AdminStates.setting_threshold)
-
-@bot.message_handler(state=AdminStates.setting_threshold)
-def process_threshold(message):
-    if is_admin(message.from_user.id):
-        try:
-            new_threshold = float(message.text)
-            if 0 <= new_threshold <= 1:
-                global NSFW_THRESHOLD
-                NSFW_THRESHOLD = new_threshold
-                bot.reply_to(message, f"NSFW eşiği {new_threshold} olarak ayarlandı.")
-            else:
-                bot.reply_to(message, "Lütfen 0 ile 1 arasında bir değer girin.")
-        except ValueError:
-            bot.reply_to(message, "Geçersiz değer. Lütfen bir sayı girin.")
-        bot.delete_state(message.from_user.id)
-
-def handle_media(message, media_type):
-    """Medya dosyalarını işle ve kontrol et"""
-    try:
-        current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        
-        if media_type == 'photo':
-            file_info = bot.get_file(message.photo[-1].file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            nsfw_score = process_image(downloaded_file)
-        elif media_type == 'sticker':
-            nsfw_score = process_sticker(message.sticker.file_id)
-        elif media_type in ['video', 'animation']:
-            file_info = bot.get_file(message.video.file_id if media_type == 'video' else message.animation.file_id)
-            downloaded_file = bot.download_file(file_info.file_path)
-            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
-                temp_file.write(downloaded_file)
-                temp_file_path = temp_file.name
-            nsfw_score = predict_video(temp_file_path)
-            os.unlink(temp_file_path)
-        else:
-            return
-
-        if nsfw_score > NSFW_THRESHOLD:
-            bot.delete_message(message.chat.id, message.message_id)
-            
-            # Kullanıcının medya geçmişine ekle
-            user_media_tracker[message.from_user.id].append(
-                (message.message_id, time.time(), message.chat.id)
-            )
-            
-            # Kullanıcının son aktivitelerini kontrol et
-            check_and_delete_user_media(message.from_user.id, message.chat.id)
-            
-            logger.info(
-                f"NSFW içerik silindi - "
-                f"Tarih: {current_time} UTC - "
-                f"Skor: {nsfw_score:.2f}, "
-                f"Tip: {media_type}, "
-                f"Kullanıcı: {message.from_user.username}, "
-                f"Grup: {message.chat.title}"
-            )
-            
-            try:
-                warning_msg = bot.send_message(
-                    message.chat.id,
-                    f"⚠️ @{message.from_user.username} uygunsuz içerik tespit edildi ve silindi."
-                )
-                delayed_delete(warning_msg.chat.id, warning_msg.message_id)
-            except Exception as e:
-                logger.error(f"Uyarı mesajı hatası: {e}")
-
-            # Eski mesajları temizle (1 saat önceki kayıtları sil)
-            current_time = time.time()
-            user_media_tracker[message.from_user.id] = [
-                msg for msg in user_media_tracker[message.from_user.id]
-                if current_time - msg[1] <= 3600  # 1 saat
-            ]
-
-    except Exception as e:
-        logger.error(f"Medya işleme hatası: {e} - Tarih: {current_time}")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photos(message):
-    handle_media(message, 'photo')
-
-@bot.message_handler(content_types=['video'])
-def handle_videos(message):
-    handle_media(message, 'video')
-
-@bot.message_handler(content_types=['animation'])
-def handle_gifs(message):
-    handle_media(message, 'animation')
-
-@bot.message_handler(content_types=['sticker'])
-def handle_stickers(message):
-    handle_media(message, 'sticker')
-
-@bot.edited_message_handler(content_types=['photo', 'video', 'animation', 'sticker'])
-def handle_edited_media(message):
-    """Düzenlenen medya mesajlarını kontrol et"""
-    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    logger.info(
-        f"Düzenlenen mesaj algılandı - "
-        f"Tarih: {current_time} UTC - "
-        f"Kullanıcı: {message.from_user.username}"
+def generate_trend_image(trend_data: Dict, title: str, chat_title: str = None):
+    """Trend verilerinden görsel oluştur"""
+    # Matplotlib Türkçe karakter desteği
+    plt.rcParams['font.family'] = 'DejaVu Sans'
+    
+    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle(f"{title}{' - ' + chat_title if chat_title else ''}", fontsize=16)
+    
+    # En çok kullanılan kelimeler grafiği
+    if trend_data['words']:
+        words = [item['word'] for item in trend_data['words']]
+        word_counts = [item['count'] for item in trend_data['words']]
+        axs[0, 0].barh(words, word_counts, color='skyblue')
+        axs[0, 0].set_title('En Çok Kullanılan Kelimeler')
+        axs[0, 0].set_xlabel('Kullanım Sayısı')
+        # Y ekseni etiketlerini tersine çevir (en popüler en üstte)
+        axs[0, 0].invert_yaxis()
+    else:
+        axs[0, 0].text(0.5, 0.5, 'Veri Bulunamadı', ha='center', va='center')
+        axs[0, 0].set_title('En Çok Kullanılan Kelimeler')
+    
+    # En çok kullanılan hashtag'ler grafiği
+    if trend_data['hashtags']:
+        hashtags = [f"#{item['hashtag']}" for item in trend_data['hashtags']]
+        hashtag_counts = [item['count'] for item in trend_data['hashtags']]
+        axs[0, 1].barh(hashtags, hashtag_counts, color='lightgreen')
+        axs[0, 1].set_title('En Çok Kullanılan Hashtag\'ler')
+        axs[0, 1].set_xlabel('Kullanım Sayısı')
+        axs[0, 1].invert_yaxis()
+    else:
+        axs[0, 1].text(0.5, 0.5, 'Veri Bulunamadı', ha='center', va='center')
+        axs[0, 1].set_title('En Çok Kullanılan Hashtag\'ler')
+    
+    # En çok mention edilen kullanıcılar grafiği
+    if trend_data['mentions']:
+        mentions = [f"@{item['username']}" for item in trend_data['mentions']]
+        mention_counts = [item['count'] for item in trend_data['mentions']]
+        axs[1, 0].barh(mentions, mention_counts, color='salmon')
+        axs[1, 0].set_title('En Çok Mention Edilen Kullanıcılar')
+        axs[1, 0].set_xlabel('Mention Sayısı')
+        axs[1, 0].invert_yaxis()
+    else:
+        axs[1, 0].text(0.5, 0.5, 'Veri Bulunamadı', ha='center', va='center')
+        axs[1, 0].set_title('En Çok Mention Edilen Kullanıcılar')
+    
+    # En aktif kullanıcılar grafiği
+    if trend_data['active_users']:
+        users = [item['username'] for item in trend_data['active_users']]
+        user_counts = [item['count'] for item in trend_data['active_users']]
+        axs[1, 1].barh(users, user_counts, color='mediumpurple')
+        axs[1, 1].set_title('En Aktif Kullanıcılar')
+        axs[1, 1].set_xlabel('Mesaj Sayısı')
+        axs[1, 1].invert_yaxis()
+    else:
+        axs[1, 1].text(0.5, 0.5, 'Veri Bulunamadı', ha='center', va='center')
+        axs[1, 1].set_title('En Aktif Kullanıcılar')
+    
+    # Alt bilgi olarak toplam mesaj sayısını ekle
+    plt.figtext(
+        0.5, 0.01, 
+        f"Toplam Mesaj: {trend_data['message_count']} | Oluşturulma: {datetime.datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}", 
+        ha="center", fontsize=10
     )
-    handle_media(message, message.content_type)
-    # Önceki kodun devamı...
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Grafiği bir byte buffer'a kaydet
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close(fig)
+    
+    return buf
 
-if __name__ == "__main__":
-    def restart_program():
-        """Botu yeniden başlatır"""
-        print("Bot yeniden başlatılıyor...")
-        time.sleep(3)
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
+def generate_wordcloud(chat_id: Optional[int] = None, period: str = 'daily'):
+    """Kelime bulutu oluştur"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    today = datetime.datetime.now(TZ).date()
+    
+    if period == 'daily':
+        start_date = today
+    elif period == 'weekly':
+        start_date = today - datetime.timedelta(days=7)
+    elif period == 'monthly':
+        start_date = today - datetime.timedelta(days=30)
+    elif period == 'total':
+        start_date = None
+    else:
+        start_date = today
+    
+    # Filtreleri hazırla
+    date_filter = ''
+    params = []
+    
+    if chat_id:
+        date_filter += 'chat_id = ?'
+        params.append(chat_id)
+    
+    if start_date:
+        if params:
+            date_filter += ' AND '
+        date_filter += 'DATE(message_date) >= ?'
+        params.append(start_date.strftime('%Y-%m-%d'))
+    
+    if date_filter:
+        date_filter = 'WHERE ' + date_filter
+    
+    # Kelime frekanslarını al
+    cursor.execute(f'''
+    SELECT word, COUNT(*) as count 
+    FROM words 
+    {date_filter} 
+    GROUP BY word
+    ''', params)
+    
+    word_freq = {row[0]: row[1] for row in cursor.fetchall()}
+    conn.close()
+    
+    if not word_freq:
+        return None
+    
+    # Wordcloud oluştur
+    wc = WordCloud(
+        width=800, height=400,
+        background_color='white',
+        max_words=200,
+        colormap='viridis',
+        collocations=False
+    ).generate_from_frequencies(word_freq)
+    
+    # Grafiği kaydet
+    plt.figure(figsize=(10, 5))
+    plt.imshow(wc, interpolation='bilinear')
+    plt.axis('off')
+    
+    # Grafiği bir byte buffer'a kaydet
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    
+    return buf
 
-    def scheduled_restart():
-        """Her 3 saatte bir botu yeniden başlatır"""
-        while True:
-            time.sleep(10800)  # 3 saat = 10800 saniye
-            print(f"Zamanlanmış yeniden başlatma: {datetime.now()}")
-            restart_program()
+# =================== BOT KOMUTLARI ===================
 
-     # Yeniden başlatma thread'ini başlat
-    restart_thread = threading.Thread(target=scheduled_restart)
-    restart_thread.daemon = True
-    restart_thread.start()
-
-    # Ana bot döngüsü
-    while True:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bot başlatma komutu"""
+    user = update.effective_user
+    chat_type = update.effective_chat.type
+    
+    welcome_message = (
+        f"👋 Merhaba {user.first_name}!\n\n"
+        f"🤖 *TrendBot* sürüm {VERSION} başarıyla başlatıldı.\n\n"
+        "Bu bot grup mesajlarında en çok kullanılan kelimeleri, hashtag'leri ve mention'ları analiz ederek "
+        "günlük, haftalık ve aylık trend raporları oluşturur.\n\n"
+    )
+    
+    # Eğer özel sohbette ise, daha detaylı mesaj gönder
+    if chat_type == 'private':
+        welcome_message += (
+            "*Komutlar:*\n"
+            "/help - Komut listesini görüntüle\n"
+            "/trend - Trend raporlarını görüntüle\n"
+            "/stats - Detaylı istatistikleri görüntüle\n"
+            "/wordcloud - Kelime bulutu oluştur\n\n"
+            "Botu gruplara ekleyerek grup konuşmalarını analiz edebilirsiniz."
+        )
+    else:
+        # Grup ise bilgileri kaydet
+        admin_ids = []
         try:
-            print(f"Bot başlatıldı: {datetime.now()}")
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            admins = await context.bot.get_chat_administrators(chat_id=update.effective_chat.id)
+            admin_ids = [admin.user.id for admin in admins]
         except Exception as e:
-            print(f"Hata oluştu: {e}")
-            time.sleep(10)
-            continue
+            logger.error(f"Admin listesi alınamadı: {e}")
+        
+        update_chat_settings(
+            update.effective_chat.id, 
+            update.effective_chat.title,
+            admin_ids
+        )
+        
+        welcome_message += (
+            "Bot bu grupta mesajları analiz etmeye başladı.\n"
+            "Komutlar için /help yazabilirsiniz."
+        )
+    
+    await update.message.reply_text(welcome_message, parse_mode=ParseMode.MARKDOWN)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Yardım komutu"""
+    chat_type = update.effective_chat.type
+    
+    help_text = (
+        "*📊 TrendBot Komutları 📊*\n\n"
+        "*Temel Komutlar:*\n"
+        "/start - Botu başlat\n"
+        "/help - Bu yardım mesajını görüntüle\n\n"
+        
+        "*Trend Raporları:*\n"
+        "/trend - Trend menüsünü göster\n"
+        "/trend_daily - Günlük trend raporu\n"
+        "/trend_weekly - Haftalık trend raporu\n"
+        "/trend_monthly - Aylık trend raporu\n"
+        "/trend_total - Genel toplam trend raporu\n\n"
+        
+        "*Kelime Bulutu:*\n"
+        "/wordcloud - Kelime bulutu menüsü\n"
+        "/wordcloud_daily - Günlük kelime bulutu\n"
+        "/wordcloud_weekly - Haftalık kelime bulutu\n"
+        "/wordcloud_monthly - Aylık kelime bulutu\n\n"
+    )
+    
+    if chat_type == 'private':
+        help_text += (
+            "*İstatistikler:*\n"
+            "/stats - İstatistik menüsünü göster\n"
+            "/groups - Analiz edilen grupları listele\n\n"
             
+            "*Arama:*\n"
+            "/search <kelime> - Belirli bir kelimeyi ara\n"
+            "/hashtag <hashtag> - Belirli bir hashtag'i ara\n"
+            "/mention <kullanıcı> - Belirli bir kullanıcıya yapılan mention'ları ara\n\n"
+        )
+    
+    if chat_type == 'group' or chat_type == 'supergroup':
+        help_text += (
+            "*Grup Ayarları:*\n"
+            "/settings - Grup ayarlarını görüntüle\n"
+            "/auto_report - Otomatik rapor ayarlarını değiştir\n\n"
+            
+            "*Not:* Tüm komut ve ayarlar grup yöneticileri tarafından kontrol edilebilir."
+        )
+    
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trend menüsü"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Günlük", callback_data="trend_daily"),
+            InlineKeyboardButton("📈 Haftalık", callback_data="trend_weekly")
+        ],
+        [
+            InlineKeyboardButton("📉 Aylık", callback_data="trend_monthly"),
+            InlineKeyboardButton("🔍 Genel Toplam", callback_data="trend_total")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "📊 *Trend Raporu Seçin:*", 
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def trend_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trend callback handler"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Callback verilerini parçala
+    data = query.data.split('_')
+    report_type = data[1] if len(data) > 1 else 'daily'
+    
+    # Rapor başlıklarını hazırla
+    titles = {
+        'daily': 'Günlük Trend Raporu',
+        'weekly': 'Haftalık Trend Raporu',
+        'monthly': 'Aylık Trend Raporu',
+        'total': 'Genel Toplam Trend Raporu'
+    }
+    
+    # İşlem mesajı gönder
+    message = await query.edit_message_text(
+        f"🔄 {titles[report_type]} hazırlanıyor...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # Trend verilerini al
+    chat_id = update.effective_chat.id
+    trend_data = get_trend_data(chat_id, report_type)
+    
+    # Trend grafiği oluştur
+    img_buffer = generate_trend_image(
+        trend_data, 
+        titles[report_type],
+        update.effective_chat.title
+    )
+    
+    # Grafiği gönder
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=img_buffer,
+        caption=f"📊 *{titles[report_type]}*\n"
+               f"📅 {datetime.datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # İşlem mesajını sil
+    await message.delete()
+
+async def wordcloud_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kelime bulutu menüsü"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Günlük", callback_data="wordcloud_daily"),
+            InlineKeyboardButton("📈 Haftalık", callback_data="wordcloud_weekly")
+        ],
+        [
+            InlineKeyboardButton("📉 Aylık", callback_data="wordcloud_monthly"),
+            InlineKeyboardButton("🔍 Genel Toplam", callback_data="wordcloud_total")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "☁️ *Kelime Bulutu Seçin:*", 
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def wordcloud_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kelime bulutu callback handler"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Callback verilerini parçala
+    data = query.data.split('_')
+    cloud_type = data[1] if len(data) > 1 else 'daily'
+    
+    # Başlıkları hazırla
+    titles = {
+        'daily': 'Günlük Kelime Bulutu',
+        'weekly': 'Haftalık Kelime Bulutu',
+        'monthly': 'Aylık Kelime Bulutu',
+        'total': 'Genel Toplam Kelime Bulutu'
+    }
+    
+    # İşlem mesajı gönder
+    message = await query.edit_message_text(
+        f"🔄 {titles[cloud_type]} hazırlanıyor...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    # Kelime bulutu oluştur
+    chat_id = update.effective_chat.id
+    img_buffer = generate_wordcloud(chat_id, cloud_type)
+    
+    if img_buffer:
+        # Kelime bulutunu gönder
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=img_buffer,
+            caption=f"☁️ *{titles[cloud_type]}*\n"
+                   f"📅 {datetime.datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        # Veri yoksa bilgi mesajı gönder
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ {titles[cloud_type]} için yeterli veri bulunamadı.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    # İşlem mesajını sil
+    await message.delete()
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grup ayarları komutu"""
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    user_id = update.effective_user.id
+    
+    # Sadece grup sohbetlerinde çalışır
+    if chat_type not in ['group', 'supergroup']:
+        await update.message.reply_text(
+            "Bu komut sadece gruplarda kullanılabilir.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Kullanıcının grup yöneticisi olup olmadığını kontrol et
+    is_admin = False
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id=chat_id)
+        admin_ids = [admin.user.id for admin in admins]
+        is_admin = user_id in admin_ids
+    except Exception as e:
+        logger.error(f"Admin listesi alınamadı: {e}")
+    
+    if not is_admin:
+        await update.message.reply_text(
+            "❌ Bu komutu kullanabilmek için grup yöneticisi olmalısınız.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Grup ayarlarını al
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (chat_id,))
+    settings = cursor.fetchone()
+    
+    if not settings:
+        # Eğer ayarlar yoksa oluştur
+        admin_ids = [admin.user.id for admin in admins]
+        update_chat_settings(chat_id, update.effective_chat.title, admin_ids)
+        
+        cursor.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (chat_id,))
+        settings = cursor.fetchone()
+    
+    # Ayarları göster
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔄 Otomatik Rapor: " + ("Açık ✅" if settings[2] else "Kapalı ❌"), 
+                callback_data="settings_toggle_auto_report"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⏰ Rapor Saati: " + settings[3], 
+                callback_data="settings_change_time"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Takip: " + ("Açık ✅" if settings[4] else "Kapalı ❌"), 
+                callback_data="settings_toggle_tracking"
+            )
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"⚙️ *{update.effective_chat.title} Grup Ayarları*\n\n"
+        "Aşağıdaki ayarları değiştirmek için ilgili düğmeye tıklayın.",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    conn.close()
+
+async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ayarlar callback handler"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Callback verilerini parçala
+    data = query.data.split('_')
+    action = data[1] if len(data) > 1 else ''
+    sub_action = data[2] if len(data) > 2 else ''
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    # Kullanıcının grup yöneticisi olup olmadığını kontrol et
+    is_admin = False
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id=chat_id)
+        admin_ids = [admin.user.id for admin in admins]
+        is_admin = user_id in admin_ids
+    except Exception as e:
+        logger.error(f"Admin listesi alınamadı: {e}")
+    
+    if not is_admin:
+        await query.edit_message_text(
+            "❌ Bu ayarları değiştirmek için grup yöneticisi olmalısınız.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    if action == 'toggle':
+        if sub_action == 'auto_report':
+            # Otomatik raporu aç/kapat
+            cursor.execute('SELECT auto_report FROM chat_settings WHERE chat_id = ?', (chat_id,))
+            current_setting = cursor.fetchone()[0]
+            new_setting = 0 if current_setting else 1
+            
+            cursor.execute(
+                'UPDATE chat_settings SET auto_report = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+                (new_setting, chat_id)
+            )
+            conn.commit()
+            
+        elif sub_action == 'tracking':
+            # Takibi aç/kapat
+            cursor.execute('SELECT tracking_enabled FROM chat_settings WHERE chat_id = ?', (chat_id,))
+            current_setting = cursor.fetchone()[0]
+            new_setting = 0 if current_setting else 1
+            
+            cursor.execute(
+                'UPDATE chat_settings SET tracking_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+                (new_setting, chat_id)
+            )
+            conn.commit()
+    
+    elif action == 'change' and sub_action == 'time':
+        # Rapor saati değiştirme UI'ı göster
+        time_options = ["08:00", "12:00", "16:00", "20:00", "00:00"]
+        keyboard = []
+        row = []
+        
+        for i, time in enumerate(time_options):
+            row.append(InlineKeyboardButton(time, callback_data=f"settings_set_time_{time}"))
+            if (i + 1) % 3 == 0 or i == len(time_options) - 1:
+                keyboard.append(row)
+                row = []
+        
+        keyboard.append([InlineKeyboardButton("⬅️ Geri", callback_data="settings_back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⏰ *Günlük Rapor Saati*\n\n"
+            "Otomatik raporların gönderileceği saati seçin:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        conn.close()
+        return
+    
+    elif action == 'set' and sub_action == 'time':
+        # Rapor saatini ayarla
+        new_time = data[3] if len(data) > 3 else "20:00"
+        
+        cursor.execute(
+            'UPDATE chat_settings SET report_time = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+            (new_time, chat_id)
+        )
+        conn.commit()
+    
+    elif action == 'back':
+        # Ana ayarlar menüsüne dön
+        pass
+    
+    # Güncel ayarları göster
+    cursor.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (chat_id,))
+    settings = cursor.fetchone()
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔄 Otomatik Rapor: " + ("Açık ✅" if settings[2] else "Kapalı ❌"), 
+                callback_data="settings_toggle_auto_report"
+            )
+        ],
+        [
