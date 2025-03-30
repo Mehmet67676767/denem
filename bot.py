@@ -1739,4 +1739,271 @@ class TrendBot:
                 "Trend verilerini görselleştirmek için bir seçenek seçin:",
                 reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
-                
+
+                            InlineKeyboardButton(
+                "⏰ Rapor Saati: " + settings[3], 
+                callback_data="settings_change_time"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Takip: " + ("Açık ✅" if settings[4] else "Kapalı ❌"), 
+                callback_data="settings_toggle_tracking"
+            )
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"⚙️ *{update.effective_chat.title} Grup Ayarları*\n\n"
+        "Aşağıdaki ayarları değiştirmek için ilgili düğmeye tıklayın.",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    conn.close()
+
+async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ayarlar callback handler"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Callback verilerini parçala
+    data = query.data.split('_')
+    action = data[1] if len(data) > 1 else ''
+    sub_action = data[2] if len(data) > 2 else ''
+    
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    # Kullanıcının grup yöneticisi olup olmadığını kontrol et
+    is_admin = False
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id=chat_id)
+        admin_ids = [admin.user.id for admin in admins]
+        is_admin = user_id in admin_ids
+    except Exception as e:
+        logger.error(f"Admin listesi alınamadı: {e}")
+    
+    if not is_admin:
+        await query.edit_message_text(
+            "❌ Bu ayarları değiştirmek için grup yöneticisi olmalısınız.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    if action == 'toggle':
+        if sub_action == 'auto_report':
+            # Otomatik raporu aç/kapat
+            cursor.execute('SELECT auto_report FROM chat_settings WHERE chat_id = ?', (chat_id,))
+            current_setting = cursor.fetchone()[0]
+            new_setting = 0 if current_setting else 1
+            
+            cursor.execute(
+                'UPDATE chat_settings SET auto_report = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+                (new_setting, chat_id)
+            )
+            conn.commit()
+            
+        elif sub_action == 'tracking':
+            # Takibi aç/kapat
+            cursor.execute('SELECT tracking_enabled FROM chat_settings WHERE chat_id = ?', (chat_id,))
+            current_setting = cursor.fetchone()[0]
+            new_setting = 0 if current_setting else 1
+            
+            cursor.execute(
+                'UPDATE chat_settings SET tracking_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+                (new_setting, chat_id)
+            )
+            conn.commit()
+    
+    elif action == 'change' and sub_action == 'time':
+        # Rapor saati değiştirme UI'ı göster
+        time_options = ["08:00", "12:00", "16:00", "20:00", "00:00"]
+        keyboard = []
+        row = []
+        
+        for i, time in enumerate(time_options):
+            row.append(InlineKeyboardButton(time, callback_data=f"settings_set_time_{time}"))
+            if (i + 1) % 3 == 0 or i == len(time_options) - 1:
+                keyboard.append(row)
+                row = []
+        
+        keyboard.append([InlineKeyboardButton("⬅️ Geri", callback_data="settings_back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⏰ *Günlük Rapor Saati*\n\n"
+            "Otomatik raporların gönderileceği saati seçin:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        conn.close()
+        return
+    
+    elif action == 'set' and sub_action == 'time':
+        # Rapor saatini ayarla
+        new_time = data[3] if len(data) > 3 else "20:00"
+        
+        cursor.execute(
+            'UPDATE chat_settings SET report_time = ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ?', 
+            (new_time, chat_id)
+        )
+        conn.commit()
+    
+    elif action == 'back':
+        # Ana ayarlar menüsüne dön
+        pass
+    
+    # Güncel ayarları göster
+    cursor.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (chat_id,))
+    settings = cursor.fetchone()
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🔄 Otomatik Rapor: " + ("Açık ✅" if settings[2] else "Kapalı ❌"), 
+                callback_data="settings_toggle_auto_report"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⏰ Rapor Saati: " + settings[3], 
+                callback_data="settings_change_time"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Takip: " + ("Açık ✅" if settings[4] else "Kapalı ❌"), 
+                callback_data="settings_toggle_tracking"
+            )
+        ],
+        [
+            InlineKeyboardButton("⬅️ Ana Menüye Dön", callback_data="main_menu")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"⚙️ *{update.effective_chat.title} Grup Ayarları*\n\n"
+        "Aşağıdaki ayarları değiştirmek için ilgili düğmeye tıklayın.",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    conn.close()
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mesaj işleyici"""
+    # Mesajı veritabanına kaydet
+    save_message(update)
+
+async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ana menü callback handler"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Trend Raporu", callback_data="trend"),
+            InlineKeyboardButton("☁️ Kelime Bulutu", callback_data="wordcloud")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Ayarlar", callback_data="settings")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "🤖 *TrendBot Ana Menü*\n\n"
+        "Lütfen bir seçenek seçin:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def auto_report(context: ContextTypes.DEFAULT_TYPE):
+    """Otomatik rapor zamanlayıcı"""
+    job = context.job
+    chat_id = job.chat_id
+    
+    # Güncel ayarları kontrol et
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT auto_report FROM chat_settings WHERE chat_id = ?', (chat_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    # Otomatik rapor kapatılmışsa işlem yapma
+    if not result or not result[0]:
+        return
+    
+    # Günlük trend raporunu gönder
+    trend_data = get_trend_data(chat_id, 'daily')
+    
+    # Trend grafiği oluştur
+    img_buffer = generate_trend_image(
+        trend_data, 
+        "Günlük Otomatik Trend Raporu",
+        context.bot_data.get(f"chat_title_{chat_id}", "Grup")
+    )
+    
+    # Grafiği gönder
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=img_buffer,
+        caption=f"📊 *Günlük Otomatik Trend Raporu*\n"
+               f"📅 {datetime.datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+def main():
+    """Bot başlatma fonksiyonu"""
+    # Veritabanını oluştur
+    init_database()
+    
+    # Download NLTK data
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    
+    # Bot uygulamasını oluştur
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Komut işleyicileri ekle
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("trend", trend_command))
+    application.add_handler(CommandHandler("trend_daily", lambda update, context: trend_callback(update, context, report_type="daily")))
+    application.add_handler(CommandHandler("trend_weekly", lambda update, context: trend_callback(update, context, report_type="weekly")))
+    application.add_handler(CommandHandler("trend_monthly", lambda update, context: trend_callback(update, context, report_type="monthly")))
+    application.add_handler(CommandHandler("trend_total", lambda update, context: trend_callback(update, context, report_type="total")))
+    
+    application.add_handler(CommandHandler("wordcloud", wordcloud_command))
+    application.add_handler(CommandHandler("wordcloud_daily", lambda update, context: wordcloud_callback(update, context, cloud_type="daily")))
+    application.add_handler(CommandHandler("wordcloud_weekly", lambda update, context: wordcloud_callback(update, context, cloud_type="weekly")))
+    application.add_handler(CommandHandler("wordcloud_monthly", lambda update, context: wordcloud_callback(update, context, cloud_type="monthly")))
+    application.add_handler(CommandHandler("wordcloud_total", lambda update, context: wordcloud_callback(update, context, cloud_type="total")))
+    
+    application.add_handler(CommandHandler("settings", settings_command))
+    
+    # Callback query işleyicileri ekle
+    application.add_handler(CallbackQueryHandler(trend_callback, pattern="^trend_"))
+    application.add_handler(CallbackQueryHandler(wordcloud_callback, pattern="^wordcloud_"))
+    application.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings_"))
+    application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
+    
+    # Mesaj işleyicisini ekle
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Botu başlat
+    logger.info("Bot başlatılıyor...")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
