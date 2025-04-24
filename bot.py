@@ -1,2270 +1,2698 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-import os
-import re
-import json
-import logging
-import datetime
+import telebot
+import time
 import sqlite3
-from collections import Counter, defaultdict
-from typing import Dict, List, Tuple, Set, Optional, Union, Any
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
-import numpy as np
+import pyfiglet
+import os
+import time
+import requests
+import random
+import hashlib
+import instaloader
+import string
+import whois
+import validators
+from telebot import types
+import qrcode
 from io import BytesIO
-import schedule
+from urllib.parse import quote_plus
+import sys
+from datetime import datetime
+import threading
+
+
+token='8048886705:AAFpNgwG8QjyUkx5ryS31M05_Z0y-TvIQu0'
+
+bot = telebot.TeleBot(token)
+
+print("yeni Bot Calisiyor")
+
+
+
+conn = sqlite3.connect("ip.db")
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS ip (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        ip TEXT
+    )
+''')
+conn.commit()
+
+conn = sqlite3.connect("pre.db")
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS pre (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER
+    )
+''')
+conn.commit()   
+
+
+conn = sqlite3.connect("phone.db")
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS phone (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        phone TEXT
+    )
+''')
+conn.commit()
+
+
+conn = sqlite3.connect("ban.db")
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS ban (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        user_name TEXT
+    )
+''')
+conn.commit()
+
+
+conn = sqlite3.connect("users.db")
+cursor = conn.cursor()
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT
+    )
+''')
+conn.commit()
+
+admins={7067213241,7521657471}
+
+
+"""
+def toplu_mesaj_gonder(mesaj):
+    with open('users.txt', mode='r') as file:
+        for user_id in file:
+            user_id = user_id.strip()
+            bot.send_message(user_id, f"{mesaj}")
+"""
+
+def toplu_mesaj_gonder(mesaj):
+    user_id=()
+    for user in user_id:
+        print(user)
+        bot.send_message(user, f"{mesaj}")
+
+def get_pre_info(user_id):
+    conn = sqlite3.connect("pre.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM pre WHERE user_id=?", (user_id,))
+    return cursor.fetchone()
+
+def get_ban_info(user_id):
+    conn = sqlite3.connect("ban.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ban WHERE user_id=?", (user_id,))
+    return cursor.fetchone()
+
+def add_ban(user_id):
+    conn = sqlite3.connect("ban.db")
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO ban (user_id) VALUES (?)', (user_id,))
+    conn.commit()
+
+@bot.message_handler(commands=['ban'])
+def ban(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    
+    if user_id not in admins:
+        bot.send_message(user_id, "Admin Değilsin Bu Kodu Çalıştırma Yetkin Yok")
+        return
+    
+    try:
+        ban_info = message.text.split(maxsplit=1)[1].strip()
+        if not ban_info:
+            bot.reply_to(message, "Lütfen bir kullanıcı kimliği giriniz. Kullanım: /ban <user_id>")
+            return
+        if ban_info in admins:
+            bot.reply_to(message, "Hey Başka Bir Admini Banlayamazsın")
+            return
+    except IndexError:
+        bot.reply_to(message, "Lütfen bir mesaj giriniz. Kullanım: /ban <user_id>")
+        return
+    add_ban(user_id=ban_info)
+    bot.reply_to(message,f"{ban_info} idli Kullanıcı Banlandı")
+    ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"Botan Banlanmışsınız\n"
+                f"Kullanıcı Bilgileri\n"
+                f"Kullanıcı Adı: {user_name}\n"
+                f"Kullanıcı ID: {user_id}\n"
+                f"Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yazın\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+
+            )
+    bot.send_message(ban_info,f"{ban_mes}")
+
+
+import sqlite3
+from datetime import datetime
 import time
 import threading
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
-from telegram.ext import (
-    Updater, CommandHandler, MessageHandler, CallbackContext,
-    Filters, CallbackQueryHandler, ConversationHandler
-)
+def get_db_connection():
+    """Her thread için yeni bir database bağlantısı oluştur"""
+    conn = sqlite3.connect("users.db")
+    return conn
 
-# Temel yapılandırma
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Bot token'ınızı buraya ekleyin
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-
-# Veritabanı kurulumu
-DB_NAME = "trendbot.db"
-
-# Menü durumları
-MAIN_MENU, REPORTS_MENU, TRACK_MENU, SETTINGS_MENU = range(4)
-
-# Stopwords - Analize dahil edilmeyecek yaygın Türkçe kelimeler
-TURKISH_STOPWORDS = {
-    "acaba", "ama", "aslında", "az", "bazı", "belki", "biri", "birkaç", "birşey", 
-    "biz", "bu", "çok", "çünkü", "da", "daha", "de", "defa", "diye", "eğer", 
-    "en", "gibi", "her", "için", "ile", "ise", "kez", "ki", "kim", "mı", "mu", 
-    "mü", "nasıl", "ne", "neden", "nerde", "nerede", "nereye", "niçin", "niye", 
-    "o", "sanki", "şey", "siz", "şu", "tüm", "ve", "veya", "ya", "yani"
-}
-
-class Database:
-    def __init__(self, db_name: str):
-        self.db_name = db_name
-        self._create_tables()
+@bot.message_handler(commands=['topmsj'])
+def handle_topmsj_command(message):
+    # Check if sender is admin
+    if message.from_user.id not in admins:
+        bot.reply_to(message, "Bu komutu kullanma yetkiniz yok!")
+        return
     
-    def _create_tables(self):
-        """Gerekli veritabanı tablolarını oluşturur."""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        
-        # Grup tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS groups (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER UNIQUE,
-            group_name TEXT,
-            joined_date TEXT
-        )
-        ''')
-        
-        # Kelime kullanımı tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS word_usage (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER,
-            word TEXT,
-            date TEXT,
-            count INTEGER,
-            UNIQUE(group_id, word, date)
-        )
-        ''')
-        
-        # Hashtag kullanımı tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hashtag_usage (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER,
-            hashtag TEXT,
-            date TEXT,
-            count INTEGER,
-            UNIQUE(group_id, hashtag, date)
-        )
-        ''')
-        
-        # Mention kullanımı tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS mention_usage (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER,
-            mention TEXT,
-            date TEXT,
-            count INTEGER,
-            UNIQUE(group_id, mention, date)
-        )
-        ''')
-        
-        # Kullanıcı takip tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_tracks (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            track_type TEXT,
-            track_value TEXT,
-            UNIQUE(user_id, track_type, track_value)
-        )
-        ''')
-        
-        # Otomatik raporlama tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS auto_reports (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER,
-            report_type TEXT,
-            enabled INTEGER DEFAULT 1,
-            time TEXT,
-            UNIQUE(group_id, report_type)
-        )
-        ''')
-        
-        # Grup ayarları tablosu
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS group_settings (
-            id INTEGER PRIMARY KEY,
-            group_id INTEGER UNIQUE,
-            min_word_length INTEGER DEFAULT 3,
-            max_words_in_report INTEGER DEFAULT 10,
-            exclude_common_words INTEGER DEFAULT 1
-        )
-        ''')
-        
-        conn.commit()
-        conn.close()
+    # Get the message content after the command
+    try:
+        broadcast_message = message.text.split(' ', 1)[1]
+    except IndexError:
+        bot.reply_to(message, "Lütfen gönderilecek mesajı yazın.\nÖrnek: /topmsj Merhaba!")
+        return
     
-    def add_group(self, group_id: int, group_name: str) -> bool:
-        """Yeni bir grup ekler."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            joined_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            
-            cursor.execute(
-                "INSERT OR IGNORE INTO groups (group_id, group_name, joined_date) VALUES (?, ?, ?)",
-                (group_id, group_name, joined_date)
-            )
-            
-            # Varsayılan grup ayarlarını ekle
-            cursor.execute(
-                "INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)",
-                (group_id,)
-            )
-            
-            conn.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Grup eklenirken hata oluştu: {e}")
-            return False
-        finally:
-            conn.close()
+    # Thread-safe database operations
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    def add_word_usage(self, group_id: int, word: str, date: str, count: int = 1):
-        """Kelime kullanımını kaydeder veya günceller."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "INSERT INTO word_usage (group_id, word, date, count) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(group_id, word, date) DO UPDATE SET count = count + ?",
-                (group_id, word.lower(), date, count, count)
-            )
-            
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Kelime kullanımı eklenirken hata oluştu: {e}")
-        finally:
-            conn.close()
-    
-    def add_hashtag_usage(self, group_id: int, hashtag: str, date: str, count: int = 1):
-        """Hashtag kullanımını kaydeder veya günceller."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "INSERT INTO hashtag_usage (group_id, hashtag, date, count) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(group_id, hashtag, date) DO UPDATE SET count = count + ?",
-                (group_id, hashtag.lower(), date, count, count)
-            )
-            
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Hashtag kullanımı eklenirken hata oluştu: {e}")
-        finally:
-            conn.close()
-    
-    def add_mention_usage(self, group_id: int, mention: str, date: str, count: int = 1):
-        """Mention kullanımını kaydeder veya günceller."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "INSERT INTO mention_usage (group_id, mention, date, count) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(group_id, mention, date) DO UPDATE SET count = count + ?",
-                (group_id, mention.lower(), date, count, count)
-            )
-            
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Mention kullanımı eklenirken hata oluştu: {e}")
-        finally:
-            conn.close()
-    
-    def get_top_words(self, group_id: Optional[int], start_date: str, end_date: str, limit: int = 10) -> List[Tuple[str, int]]:
-        """Belirli bir tarih aralığındaki en popüler kelimeleri döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            if group_id:
-                cursor.execute(
-                    "SELECT word, SUM(count) as total FROM word_usage "
-                    "WHERE group_id = ? AND date BETWEEN ? AND ? "
-                    "GROUP BY word ORDER BY total DESC LIMIT ?",
-                    (group_id, start_date, end_date, limit)
-                )
-            else:
-                cursor.execute(
-                    "SELECT word, SUM(count) as total FROM word_usage "
-                    "WHERE date BETWEEN ? AND ? "
-                    "GROUP BY word ORDER BY total DESC LIMIT ?",
-                    (start_date, end_date, limit)
-                )
-            
-            return cursor.fetchall()
-        except Exception as e:
-            logger.error(f"En popüler kelimeler getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def get_top_hashtags(self, group_id: Optional[int], start_date: str, end_date: str, limit: int = 10) -> List[Tuple[str, int]]:
-        """Belirli bir tarih aralığındaki en popüler hashtag'leri döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            if group_id:
-                cursor.execute(
-                    "SELECT hashtag, SUM(count) as total FROM hashtag_usage "
-                    "WHERE group_id = ? AND date BETWEEN ? AND ? "
-                    "GROUP BY hashtag ORDER BY total DESC LIMIT ?",
-                    (group_id, start_date, end_date, limit)
-                )
-            else:
-                cursor.execute(
-                    "SELECT hashtag, SUM(count) as total FROM hashtag_usage "
-                    "WHERE date BETWEEN ? AND ? "
-                    "GROUP BY hashtag ORDER BY total DESC LIMIT ?",
-                    (start_date, end_date, limit)
-                )
-            
-            return cursor.fetchall()
-        except Exception as e:
-            logger.error(f"En popüler hashtag'ler getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def get_top_mentions(self, group_id: Optional[int], start_date: str, end_date: str, limit: int = 10) -> List[Tuple[str, int]]:
-        """Belirli bir tarih aralığındaki en popüler mention'ları döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            if group_id:
-                cursor.execute(
-                    "SELECT mention, SUM(count) as total FROM mention_usage "
-                    "WHERE group_id = ? AND date BETWEEN ? AND ? "
-                    "GROUP BY mention ORDER BY total DESC LIMIT ?",
-                    (group_id, start_date, end_date, limit)
-                )
-            else:
-                cursor.execute(
-                    "SELECT mention, SUM(count) as total FROM mention_usage "
-                    "WHERE date BETWEEN ? AND ? "
-                    "GROUP BY mention ORDER BY total DESC LIMIT ?",
-                    (start_date, end_date, limit)
-                )
-            
-            return cursor.fetchall()
-        except Exception as e:
-            logger.error(f"En popüler mention'lar getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def get_trend_change(self, group_id: Optional[int], item_type: str, prev_start: str, 
-                          prev_end: str, curr_start: str, curr_end: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """İki farklı tarih aralığı arasındaki trend değişimini hesaplar."""
-        table_map = {
-            'word': 'word_usage',
-            'hashtag': 'hashtag_usage',
-            'mention': 'mention_usage'
-        }
+    try:
+        # Get users from database and send message
+        cursor.execute("SELECT user_id FROM users")
+        users = cursor.fetchall()
+        total_users = len(users)
         
-        item_col = item_type
-        table = table_map.get(item_type)
+        # Send initial status message
+        status_msg = bot.reply_to(message, f"Toplu mesaj gönderimi başlıyor...\nToplam kullanıcı sayısı: {total_users}")
         
-        if not table:
-            logger.error(f"Geçersiz öğe türü: {item_type}")
-            return []
+        success_count = 0
+        fail_count = 0
         
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            # Önceki dönem için sorgu
-            if group_id:
-                cursor.execute(
-                    f"SELECT {item_col}, SUM(count) as total FROM {table} "
-                    f"WHERE group_id = ? AND date BETWEEN ? AND ? "
-                    f"GROUP BY {item_col}",
-                    (group_id, prev_start, prev_end)
-                )
-            else:
-                cursor.execute(
-                    f"SELECT {item_col}, SUM(count) as total FROM {table} "
-                    f"WHERE date BETWEEN ? AND ? "
-                    f"GROUP BY {item_col}",
-                    (prev_start, prev_end)
-                )
-            
-            prev_data = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # Şimdiki dönem için sorgu
-            if group_id:
-                cursor.execute(
-                    f"SELECT {item_col}, SUM(count) as total FROM {table} "
-                    f"WHERE group_id = ? AND date BETWEEN ? AND ? "
-                    f"GROUP BY {item_col}",
-                    (group_id, curr_start, curr_end)
-                )
-            else:
-                cursor.execute(
-                    f"SELECT {item_col}, SUM(count) as total FROM {table} "
-                    f"WHERE date BETWEEN ? AND ? "
-                    f"GROUP BY {item_col}",
-                    (curr_start, curr_end)
-                )
-            
-            curr_data = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # Tüm benzersiz öğeleri topla
-            all_items = set(prev_data.keys()) | set(curr_data.keys())
-            
-            # Trend değişimini hesapla
-            trend_changes = []
-            for item in all_items:
-                prev_count = prev_data.get(item, 0)
-                curr_count = curr_data.get(item, 0)
-                
-                # Değişim yüzdesi (önceki dönemde hiç yoksa yüzde değişim 100 olarak kabul edilir)
-                if prev_count == 0:
-                    percent_change = 100 if curr_count > 0 else 0
-                else:
-                    percent_change = ((curr_count - prev_count) / prev_count) * 100
-                
-                # Mutlak değişim
-                abs_change = curr_count - prev_count
-                
-                trend_changes.append({
-                    'item': item,
-                    'prev_count': prev_count,
-                    'curr_count': curr_count,
-                    'abs_change': abs_change,
-                    'percent_change': percent_change
-                })
-            
-            # En büyük değişime göre sırala
-            trend_changes.sort(key=lambda x: abs(x['percent_change']), reverse=True)
-            
-            return trend_changes[:limit]
-        except Exception as e:
-            logger.error(f"Trend değişimi hesaplanırken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def add_user_track(self, user_id: int, track_type: str, track_value: str) -> bool:
-        """Kullanıcının takip etmek istediği kelime/hashtag'i ekler."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "INSERT OR IGNORE INTO user_tracks (user_id, track_type, track_value) VALUES (?, ?, ?)",
-                (user_id, track_type, track_value.lower())
-            )
-            
-            conn.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Kullanıcı takibi eklenirken hata oluştu: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def remove_user_track(self, user_id: int, track_type: str, track_value: str) -> bool:
-        """Kullanıcının takip ettiği kelime/hashtag'i kaldırır."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "DELETE FROM user_tracks WHERE user_id = ? AND track_type = ? AND track_value = ?",
-                (user_id, track_type, track_value.lower())
-            )
-            
-            conn.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Kullanıcı takibi kaldırılırken hata oluştu: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def get_user_tracks(self, user_id: int) -> List[Dict[str, str]]:
-        """Kullanıcının takip ettiği kelime/hashtag'leri döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT track_type, track_value FROM user_tracks WHERE user_id = ?",
-                (user_id,)
-            )
-            
-            return [{'type': row[0], 'value': row[1]} for row in cursor.fetchall()]
-        except Exception as e:
-            logger.error(f"Kullanıcı takipleri getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def set_auto_report(self, group_id: int, report_type: str, enabled: bool, time: str) -> bool:
-        """Grup için otomatik rapor ayarı yapar."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "INSERT INTO auto_reports (group_id, report_type, enabled, time) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(group_id, report_type) DO UPDATE SET enabled = ?, time = ?",
-                (group_id, report_type, 1 if enabled else 0, time, 1 if enabled else 0, time)
-            )
-            
-            conn.commit()
-            return True
-        except Exception as e:
-            logger.error(f"Otomatik rapor ayarlanırken hata oluştu: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def get_auto_reports(self, time_now: str = None) -> List[Dict[str, Any]]:
-        """Aktif otomatik raporları döndürür. Eğer time_now belirtilirse, o saatteki raporları getirir."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            if time_now:
-                cursor.execute(
-                    "SELECT ar.group_id, g.group_name, ar.report_type, ar.time FROM auto_reports ar "
-                    "JOIN groups g ON ar.group_id = g.group_id "
-                    "WHERE ar.enabled = 1 AND ar.time = ?",
-                    (time_now,)
-                )
-            else:
-                cursor.execute(
-                    "SELECT ar.group_id, g.group_name, ar.report_type, ar.time FROM auto_reports ar "
-                    "JOIN groups g ON ar.group_id = g.group_id "
-                    "WHERE ar.enabled = 1"
-                )
-            
-            return [
-                {
-                    'group_id': row[0],
-                    'group_name': row[1],
-                    'report_type': row[2],
-                    'time': row[3]
-                }
-                for row in cursor.fetchall()
-            ]
-        except Exception as e:
-            logger.error(f"Otomatik raporlar getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-    
-    def update_group_settings(self, group_id: int, settings: Dict[str, Any]) -> bool:
-        """Grup ayarlarını günceller."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            # Güncellenecek alanları ve değerlerini hazırla
-            update_fields = []
-            params = []
-            
-            for key, value in settings.items():
-                update_fields.append(f"{key} = ?")
-                params.append(value)
-            
-            if not update_fields:
-                return False
-            
-            params.append(group_id)
-            
-            # Güncelleme sorgusunu oluştur
-            query = f"UPDATE group_settings SET {', '.join(update_fields)} WHERE group_id = ?"
-            
-            cursor.execute(query, params)
-            conn.commit()
-            
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Grup ayarları güncellenirken hata oluştu: {e}")
-            return False
-        finally:
-            conn.close()
-
-   def get_group_settings(self, group_id: int) -> Dict[str, Any]:
-        """Grup ayarlarını döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT min_word_length, max_words_in_report, exclude_common_words "
-                "FROM group_settings WHERE group_id = ?",
-                (group_id,)
-            )
-            
-            row = cursor.fetchone()
-            
-            if row:
-                return {
-                    'min_word_length': row[0],
-                    'max_words_in_report': row[1],
-                    'exclude_common_words': row[2]
-                }
-            else:
-                return {
-                    'min_word_length': 3,
-                    'max_words_in_report': 10,
-                    'exclude_common_words': 1
-                }
-        except Exception as e:
-            logger.error(f"Grup ayarları getirilirken hata oluştu: {e}")
-            return {
-                'min_word_length': 3,
-                'max_words_in_report': 10,
-                'exclude_common_words': 1
-            }
-        finally:
-            conn.close()
-    
-    def get_groups(self) -> List[Dict[str, Any]]:
-        """Tüm grupları döndürür."""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT group_id, group_name, joined_date FROM groups")
-            
-            return [
-                {
-                    'id': row[0],
-                    'name': row[1],
-                    'joined_date': row[2]
-                }
-                for row in cursor.fetchall()
-            ]
-        except Exception as e:
-            logger.error(f"Gruplar getirilirken hata oluştu: {e}")
-            return []
-        finally:
-            conn.close()
-
-
-class TrendBot:
-    def __init__(self, token: str):
-        self.updater = Updater(token=token)
-        self.dispatcher = self.updater.dispatcher
-        self.db = Database(DB_NAME)
-        self.report_scheduler = None
-        
-        # Komut işleyicilerini ayarla
-        self.setup_handlers()
-        
-        # Zamanlayıcı başlat
-        self.start_scheduler()
-    
-    def setup_handlers(self):
-        """Bot komut işleyicilerini ayarlar."""
-        # Temel komutlar
-        self.dispatcher.add_handler(CommandHandler("start", self.command_start))
-        self.dispatcher.add_handler(CommandHandler("help", self.command_help))
-        self.dispatcher.add_handler(CommandHandler("menu", self.command_menu))
-        
-        # Rapora özel komutlar
-        self.dispatcher.add_handler(CommandHandler("gunluk", self.command_daily_report))
-        self.dispatcher.add_handler(CommandHandler("haftalik", self.command_weekly_report))
-        self.dispatcher.add_handler(CommandHandler("aylik", self.command_monthly_report))
-        self.dispatcher.add_handler(CommandHandler("tum_zamanlar", self.command_all_time_report))
-        
-        # Takip komutları
-        self.dispatcher.add_handler(CommandHandler("takip", self.command_track))
-        self.dispatcher.add_handler(CommandHandler("takiplerim", self.command_my_tracks))
-        
-        # Ayar komutları
-        self.dispatcher.add_handler(CommandHandler("ayarlar", self.command_settings))
-        
-        # Özel kelime/hashtag sorguları
-        self.dispatcher.add_handler(CommandHandler("kelime", self.command_word_info))
-        self.dispatcher.add_handler(CommandHandler("hashtag", self.command_hashtag_info))
-        self.dispatcher.add_handler(CommandHandler("mention", self.command_mention_info))
-        
-        # Otomatik raporlama
-        self.dispatcher.add_handler(CommandHandler("oto_rapor", self.command_auto_report))
-        
-        # Callback sorguları
-        self.dispatcher.add_handler(CallbackQueryHandler(self.button_callback))
-        
-        # Mesaj işleyici
-        self.dispatcher.add_handler(MessageHandler(
-            Filters.text & ~Filters.command, self.handle_message
-        ))
-        
-        # Hata işleyici
-        self.dispatcher.add_error_handler(self.error_handler)
-    
-    def start_scheduler(self):
-        """Zamanlayıcıyı başlatır ve otomatik raporlama için zamanlanmış görevleri ayarlar."""
-        # Her saat başı kontrol et
-        for hour in range(24):
-            for minute in [0, 15, 30, 45]:
-                time_str = f"{hour:02d}:{minute:02d}"
-                schedule.every().day.at(time_str).do(self.send_scheduled_reports, time_str)
-        
-        # Zamanlayıcıyı ayrı bir thread'de çalıştır
-        self.report_scheduler = threading.Thread(target=self.run_scheduler)
-        self.report_scheduler.daemon = True
-        self.report_scheduler.start()
-    
-    def run_scheduler(self):
-        """Zamanlayıcı thread'i."""
-        while True:
-            schedule.run_pending()
-            time.sleep(60)  # Her dakika kontrol et
-    
-    def send_scheduled_reports(self, time_str: str):
-        """Zamanlanmış raporları gönderir."""
-        logger.info(f"Zamanlanmış raporlar kontrol ediliyor: {time_str}")
-        
-        reports = self.db.get_auto_reports(time_str)
-        
-        for report in reports:
-            group_id = report['group_id']
-            report_type = report['report_type']
-            
+        for index, user in enumerate(users, 1):
+            user_id = user[0]
             try:
-                if report_type == 'daily':
-                    self.send_daily_report(group_id)
-                elif report_type == 'weekly':
-                    self.send_weekly_report(group_id)
-                elif report_type == 'monthly':
-                    self.send_monthly_report(group_id)
+                bot.send_message(user_id, broadcast_message)
+                success_count += 1
                 
-                logger.info(f"Zamanlanmış rapor gönderildi: {report_type} - Grup ID: {group_id}")
+                # Update status every 10 messages
+                if index % 10 == 0:
+                    bot.edit_message_text(
+                        f"Mesaj gönderimi devam ediyor...\n"
+                        f"İşlenen: {index}/{total_users}\n"
+                        f"Başarılı: {success_count}\n"
+                        f"Başarısız: {fail_count}",
+                        message.chat.id,
+                        status_msg.message_id
+                    )
+                
+                time.sleep(0.5)  # 500ms delay between messages
+                
             except Exception as e:
-                logger.error(f"Zamanlanmış rapor gönderilirken hata oluştu: {e}")
-    
-    async def is_admin(self, update: Update, context: CallbackContext) -> bool:
-        """Kullanıcının grup admini olup olmadığını kontrol eder."""
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id
+                fail_count += 1
+                print(f"Error sending message to user {user_id}: {e}")
         
-        # Özel sohbetlerde herkes "admin" olarak kabul edilir
-        if update.effective_chat.type == 'private':
-            return True
-        
-        try:
-            # Kullanıcının grup içindeki bilgilerini al
-            chat_member = await context.bot.get_chat_member(chat_id, user_id)
-            
-            # Admin veya creator ise True döndür
-            return chat_member.status in ('administrator', 'creator')
-        except Exception as e:
-            logger.error(f"Admin kontrolü sırasında hata: {e}")
-            return False
-    
-    def command_start(self, update: Update, context: CallbackContext):
-        """Start komutunu işler."""
-        chat_id = update.effective_chat.id
-        user = update.effective_user
-        
-        # Grup sohbeti ise
-        if update.effective_chat.type in ['group', 'supergroup']:
-            group_name = update.effective_chat.title
-            
-            # Grubu veritabanına ekle
-            self.db.add_group(chat_id, group_name)
-            
-            message = (
-                f"Merhaba! Ben TrendBot, mesaj trendlerini analiz eden bir botum. 🤖\n\n"
-                f"Bu gruptaki mesajları analiz ederek popüler kelimeler, hashtag'ler ve mention'lar hakkında "
-                f"günlük, haftalık ve aylık raporlar oluşturacağım.\n\n"
-                f"Komutlarımı görmek için /help yazabilirsiniz."
-            )
-        else:  # Özel sohbet ise
-            message = (
-                f"Merhaba {user.first_name}! Ben TrendBot, mesaj trendlerini analiz eden bir botum. 🤖\n\n"
-                f"Beni bir gruba ekleyerek, o gruptaki mesajları analiz edebilir ve "
-                f"popüler kelimeler, hashtag'ler ve mention'lar hakkında raporlar alabilirsiniz.\n\n"
-                f"Komutlarımı görmek için /help yazabilirsiniz.\n"
-                f"Ana menüyü açmak için /menu yazabilirsiniz."
-            )
-        
-        context.bot.send_message(chat_id=chat_id, text=message)
-    
-    def command_help(self, update: Update, context: CallbackContext):
-        """Help komutunu işler."""
-        chat_id = update.effective_chat.id
-        
-        help_text = (
-            "📊 *TrendBot Komutları* 📊\n\n"
-            "*Temel Komutlar:*\n"
-            "/start - Botu başlat\n"
-            "/help - Bu yardım mesajını göster\n"
-            "/menu - Ana menüyü aç\n\n"
-            
-            "*Rapor Komutları:*\n"
-            "/gunluk - Günlük trend raporu\n"
-            "/haftalik - Haftalık trend raporu\n"
-            "/aylik - Aylık trend raporu\n"
-            "/tum_zamanlar - Tüm zamanların trend raporu\n\n"
-            
-            "*Takip Komutları:*\n"
-            "/takip <kelime/hashtag/mention> <değer> - Belirli bir kelime/hashtag/mention'ı takip et\n"
-            "/takiplerim - Takip ettiğiniz öğeleri listele\n\n"
-            
-            "*Sorgu Komutları:*\n"
-            "/kelime <kelime> - Belirli bir kelimenin istatistiklerini göster\n"
-            "/hashtag <hashtag> - Belirli bir hashtag'in istatistiklerini göster\n"
-            "/mention <mention> - Belirli bir mention'ın istatistiklerini göster\n\n"
-            
-            "*Ayarlar (Sadece Grup Adminleri):*\n"
-            "/ayarlar - Grup ayarlarını düzenle\n"
-            "/oto_rapor <daily/weekly/monthly> <saat> - Otomatik rapor zamanlaması ayarla\n"
-        )
-        
-        context.bot.send_message(
-            chat_id=chat_id,
-            text=help_text,
-            parse_mode=ParseMode.MARKDOWN
+        # Send final status message
+        bot.edit_message_text(
+            f"✅ Toplu mesaj gönderimi tamamlandı!\n\n"
+            f"Toplam: {total_users}\n"
+            f"Başarılı: {success_count}\n"
+            f"Başarısız: {fail_count}",
+            message.chat.id,
+            status_msg.message_id
         )
     
-    def command_menu(self, update: Update, context: CallbackContext):
-        """Ana menüyü gösterir."""
-        chat_id = update.effective_chat.id
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📊 Raporlar", callback_data="menu_reports"),
-                InlineKeyboardButton("🔍 Takip Et", callback_data="menu_track")
-            ],
-            [
-                InlineKeyboardButton("⚙️ Ayarlar", callback_data="menu_settings"),
-                InlineKeyboardButton("❓ Yardım", callback_data="menu_help")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        context.bot.send_message(
-            chat_id=chat_id,
-            text="📱 *TrendBot Ana Menü* 📱\n\nLütfen bir seçenek seçin:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        return MAIN_MENU
-    
-    def button_callback(self, update: Update, context: CallbackContext):
-        """Buton callback'lerini işler."""
-        query = update.callback_query
-        query.answer()
-        
-        data = query.data
-        chat_id = query.message.chat_id
-        
-        # Ana menü callbacks
-        if data == "menu_reports":
-            self.show_reports_menu(update, context)
-        elif data == "menu_track":
-            self.show_track_menu(update, context)
-        elif data == "menu_settings":
-            self.show_settings_menu(update, context)
-        elif data == "menu_help":
-            self.command_help(update, context)
-        
-        # Rapor menüsü callbacks
-        elif data == "report_daily":
-            self.command_daily_report(update, context)
-        elif data == "report_weekly":
-            self.command_weekly_report(update, context)
-        elif data == "report_monthly":
-            self.command_monthly_report(update, context)
-        elif data == "report_alltime":
-            self.command_all_time_report(update, context)
-        elif data == "report_back":
-            self.command_menu(update, context)
-        
-        # Takip menüsü callbacks
-        elif data.startswith("track_"):
-            track_type = data.split("_")[1]
-            context.user_data["track_type"] = track_type
-            
-            query.edit_message_text(
-                text=f"Takip etmek istediğiniz {track_type} değerini yazın:",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        elif data == "track_list":
-            self.command_my_tracks(update, context)
-        elif data == "track_back":
-            self.command_menu(update, context)
-        
-        # Ayarlar menüsü callbacks
-        elif data.startswith("settings_"):
-            if data == "settings_back":
-                self.command_menu(update, context)
-            elif data == "settings_auto_report":
-                self.show_auto_report_menu(update, context)
-            elif data == "settings_word_length":
-                self.show_word_length_menu(update, context)
-            elif data == "settings_max_words":
-                self.show_max_words_menu(update, context)
-            elif data == "settings_exclude_common":
-                self.toggle_exclude_common(update, context)
-        
-        # Otomatik rapor menüsü callbacks
-        elif data.startswith("auto_report_"):
-            parts = data.split("_")
-            if len(parts) >= 3:
-                report_type = parts[2]
-                self.setup_auto_report(update, context, report_type)
-    
-    def show_reports_menu(self, update: Update, context: CallbackContext):
-        """Rapor menüsünü gösterir."""
-        query = update.callback_query
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📅 Günlük Rapor", callback_data="report_daily"),
-                InlineKeyboardButton("📆 Haftalık Rapor", callback_data="report_weekly")
-            ],
-            [
-                InlineKeyboardButton("📈 Aylık Rapor", callback_data="report_monthly"),
-                InlineKeyboardButton("📊 Tüm Zamanlar", callback_data="report_alltime")
-            ],
-            [
-                InlineKeyboardButton("⬅️ Geri", callback_data="report_back")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            text="📊 *Rapor Menüsü* 📊\n\nLütfen bir rapor türü seçin:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        return REPORTS_MENU
-    
-    def show_track_menu(self, update: Update, context: CallbackContext):
-        """Takip menüsünü gösterir."""
-        query = update.callback_query
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🔤 Kelime Takip Et", callback_data="track_word"),
-                InlineKeyboardButton("#️⃣ Hashtag Takip Et", callback_data="track_hashtag")
-            ],
-            [
-                InlineKeyboardButton("👤 Mention Takip Et", callback_data="track_mention"),
-                InlineKeyboardButton("📋 Takip Listem", callback_data="track_list")
-            ],
-            [
-                InlineKeyboardButton("⬅️ Geri", callback_data="track_back")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        query.edit_message_text(
-            text="🔍 *Takip Menüsü* 🔍\n\nNeyi takip etmek istersiniz?",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        return TRACK_MENU
-
-async def show_settings_menu(update: Update, context: CallbackContext) -> int:
-    """Ayarlar menüsünü gösterir."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    chat_id = update.effective_chat.id
-    
-    # Grup ayarlarını getir
-    settings = db.get_group_settings(chat_id)
-    
-    # Otomatik raporlamaları getir
-    auto_reports = db.get_auto_reports(chat_id)
-    
-    daily_report_status = "Aktif ✅" if any(r[0] == "daily" and r[1] for r in auto_reports) else "Pasif ❌"
-    weekly_report_status = "Aktif ✅" if any(r[0] == "weekly" and r[1] for r in auto_reports) else "Pasif ❌"
-    monthly_report_status = "Aktif ✅" if any(r[0] == "monthly" and r[1] for r in auto_reports) else "Pasif ❌"
-    
-    keyboard = [
-        [InlineKeyboardButton(f"Min. Kelime Uzunluğu: {settings['min_word_length']}", callback_data="settings_min_length")],
-        [InlineKeyboardButton(f"Rapor Kelime Sayısı: {settings['max_words_in_report']}", callback_data="settings_max_words")],
-        [InlineKeyboardButton(
-            f"Yaygın Kelimeleri Filtrele: {'Açık ✅' if settings['exclude_common_words'] else 'Kapalı ❌'}", 
-            callback_data="settings_toggle_common"
-        )],
-        [InlineKeyboardButton(f"Günlük Rapor: {daily_report_status}", callback_data="settings_toggle_daily")],
-        [InlineKeyboardButton(f"Haftalık Rapor: {weekly_report_status}", callback_data="settings_toggle_weekly")],
-        [InlineKeyboardButton(f"Aylık Rapor: {monthly_report_status}", callback_data="settings_toggle_monthly")],
-        [InlineKeyboardButton("🔙 Geri", callback_data="back_to_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.effective_message.edit_text(
-        "📊 *TrendBot Ayarları*\n\n"
-        "Aşağıdaki ayarları değiştirmek için ilgili butona tıklayın:",
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    return SETTINGS_MENU
-
-async def toggle_setting(update: Update, context: CallbackContext) -> int:
-    """Ayarları değiştirir."""
-    query = update.callback_query
-    await query.answer()
-    
-    chat_id = update.effective_chat.id
-    data = query.data
-    
-    # Grubun admin kontrolü
-    user_id = update.effective_user.id
-    try:
-        chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        is_admin = chat_member.status in ["creator", "administrator"]
-        
-        if not is_admin:
-            await query.message.reply_text("Bu komutu kullanabilmek için grup yöneticisi olmanız gerekiyor.")
-            return SETTINGS_MENU
-    except Exception as e:
-        logger.error(f"Admin kontrolü yapılırken hata oluştu: {e}")
-        # Özel mesajlarda devam et
-        if chat_id == user_id:
-            is_admin = True
-        else:
-            return SETTINGS_MENU
-    
-    if data == "settings_toggle_common":
-        settings = db.get_group_settings(chat_id)
-        db.update_group_settings(chat_id, exclude_common_words=not settings["exclude_common_words"])
-    
-    elif data == "settings_toggle_daily":
-        reports = db.get_auto_reports(chat_id)
-        is_enabled = any(r[0] == "daily" and r[1] for r in reports)
-        db.set_auto_report(chat_id, "daily", not is_enabled)
-    
-    elif data == "settings_toggle_weekly":
-        reports = db.get_auto_reports(chat_id)
-        is_enabled = any(r[0] == "weekly" and r[1] for r in reports)
-        db.set_auto_report(chat_id, "weekly", not is_enabled)
-    
-    elif data == "settings_toggle_monthly":
-        reports = db.get_auto_reports(chat_id)
-        is_enabled = any(r[0] == "monthly" and r[1] for r in reports)
-        db.set_auto_report(chat_id, "monthly", not is_enabled)
-    
-    elif data == "settings_min_length":
-        await update.effective_message.edit_text(
-            "Minimum kelime uzunluğunu değiştirmek için 2-10 arasında bir sayı girin:\n"
-            "(Sadece bu uzunluktan daha uzun kelimeler analize dahil edilecektir)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "min_length"
-        return SETTINGS_MENU
-    
-    elif data == "settings_max_words":
-        await update.effective_message.edit_text(
-            "Raporda gösterilecek maksimum kelime sayısını değiştirmek için 5-50 arasında bir sayı girin:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "max_words"
-        return SETTINGS_MENU
-    
-    # Ayarlar menüsünü tekrar göster
-    return await show_settings_menu(update, context)
-
-async def handle_settings_input(update: Update, context: CallbackContext) -> int:
-    """Ayarlar için girilen değerleri işler."""
-    user_input = update.message.text
-    chat_id = update.effective_chat.id
-    waiting_for = context.user_data.get("waiting_for")
-    
-    if waiting_for == "min_length":
-        try:
-            value = int(user_input)
-            if 2 <= value <= 10:
-                db.update_group_settings(chat_id, min_word_length=value)
-                await update.message.reply_text(f"Minimum kelime uzunluğu {value} olarak ayarlandı.")
-            else:
-                await update.message.reply_text("Lütfen 2-10 arasında bir değer girin.")
-        except ValueError:
-            await update.message.reply_text("Lütfen geçerli bir sayı girin.")
-    
-    elif waiting_for == "max_words":
-        try:
-            value = int(user_input)
-            if 5 <= value <= 50:
-                db.update_group_settings(chat_id, max_words_in_report=value)
-                await update.message.reply_text(f"Raporda gösterilecek maksimum kelime sayısı {value} olarak ayarlandı.")
-            else:
-                await update.message.reply_text("Lütfen 5-50 arasında bir değer girin.")
-        except ValueError:
-            await update.message.reply_text("Lütfen geçerli bir sayı girin.")
-    
-    context.user_data.pop("waiting_for", None)
-    
-    # Ayarlar menüsünü tekrar göster (özel mesaj olarak)
-    keyboard = [
-        [InlineKeyboardButton("📊 Ayarlar Menüsüne Dön", callback_data="show_settings")]
-    ]
-    await update.message.reply_text(
-        "Ayarlar güncellendi. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return SETTINGS_MENU
-
-async def show_track_menu(update: Update, context: CallbackContext) -> int:
-    """Takip menüsünü gösterir."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    user_id = update.effective_user.id
-    
-    # Kullanıcının takip ettiği öğeleri getir
-    tracks = db.get_user_tracks(user_id)
-    
-    words = [t[1] for t in tracks if t[0] == "word"]
-    hashtags = [t[1] for t in tracks if t[0] == "hashtag"]
-    mentions = [t[1] for t in tracks if t[0] == "mention"]
-    
-    keyboard = [
-        [InlineKeyboardButton("➕ Kelime Takip Et", callback_data="track_add_word")],
-        [InlineKeyboardButton("➕ Hashtag Takip Et", callback_data="track_add_hashtag")],
-        [InlineKeyboardButton("➕ Kullanıcı Takip Et", callback_data="track_add_mention")],
-        [InlineKeyboardButton("❌ Takibi Kaldır", callback_data="track_remove")],
-        [InlineKeyboardButton("📊 Takip Raporunu Gör", callback_data="track_report")],
-        [InlineKeyboardButton("🔙 Geri", callback_data="back_to_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    message = "📈 *Takip Menüsü*\n\n"
-    
-    if words:
-        message += "*Takip Ettiğiniz Kelimeler:*\n"
-        for word in words:
-            message += f"• {word}\n"
-        message += "\n"
-    
-    if hashtags:
-        message += "*Takip Ettiğiniz Hashtag'ler:*\n"
-        for hashtag in hashtags:
-            message += f"• #{hashtag}\n"
-        message += "\n"
-    
-    if mentions:
-        message += "*Takip Ettiğiniz Kullanıcılar:*\n"
-        for mention in mentions:
-            message += f"• @{mention}\n"
-        message += "\n"
-    
-    if not words and not hashtags and not mentions:
-        message += "_Henüz takip ettiğiniz bir kelime, hashtag veya kullanıcı bulunmamaktadır._\n\n"
-    
-    message += "Takip işlemleri için aşağıdaki menüyü kullanabilirsiniz:"
-    
-    await update.effective_message.edit_text(
-        message,
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    return TRACK_MENU
-
-async def add_track(update: Update, context: CallbackContext) -> int:
-    """Takip eklemek için girdi ister."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "track_add_word":
-        await update.effective_message.edit_text(
-            "Takip etmek istediğiniz kelimeyi yazın:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "track_word"
-    
-    elif data == "track_add_hashtag":
-        await update.effective_message.edit_text(
-            "Takip etmek istediğiniz hashtag'i yazın (# işareti olmadan):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "track_hashtag"
-    
-    elif data == "track_add_mention":
-        await update.effective_message.edit_text(
-            "Takip etmek istediğiniz kullanıcı adını yazın (@ işareti olmadan):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "track_mention"
-    
-    return TRACK_MENU
-
-async def handle_track_input(update: Update, context: CallbackContext) -> int:
-    """Takip için girilen değerleri işler."""
-    user_input = update.message.text.strip()
-    user_id = update.effective_user.id
-    waiting_for = context.user_data.get("waiting_for")
-    
-    if waiting_for == "track_word":
-        # Kelime kontrolü
-        if len(user_input) < 2:
-            await update.message.reply_text("Kelime en az 2 karakter olmalıdır. Lütfen tekrar deneyin.")
-            return TRACK_MENU
-        
-        if db.add_user_track(user_id, "word", user_input):
-            await update.message.reply_text(f"'{user_input}' kelimesi takip listenize eklendi.")
-        else:
-            await update.message.reply_text("Bu kelime zaten takip listenizde bulunuyor.")
-    
-    elif waiting_for == "track_hashtag":
-        # Hashtag kontrolü - # işaretini kaldır
-        hashtag = user_input.replace("#", "")
-        
-        if len(hashtag) < 2:
-            await update.message.reply_text("Hashtag en az 2 karakter olmalıdır. Lütfen tekrar deneyin.")
-            return TRACK_MENU
-        
-        if db.add_user_track(user_id, "hashtag", hashtag):
-            await update.message.reply_text(f"'#{hashtag}' hashtag'i takip listenize eklendi.")
-        else:
-            await update.message.reply_text("Bu hashtag zaten takip listenizde bulunuyor.")
-    
-    elif waiting_for == "track_mention":
-        # Mention kontrolü - @ işaretini kaldır
-        mention = user_input.replace("@", "")
-        
-        if len(mention) < 2:
-            await update.message.reply_text("Kullanıcı adı en az 2 karakter olmalıdır. Lütfen tekrar deneyin.")
-            return TRACK_MENU
-        
-        if db.add_user_track(user_id, "mention", mention):
-            await update.message.reply_text(f"'@{mention}' kullanıcısı takip listenize eklendi.")
-        else:
-            await update.message.reply_text("Bu kullanıcı zaten takip listenizde bulunuyor.")
-    
-    context.user_data.pop("waiting_for", None)
-    
-    # Takip menüsüne dön butonu
-    keyboard = [
-        [InlineKeyboardButton("📊 Takip Menüsüne Dön", callback_data="show_track")]
-    ]
-    await update.message.reply_text(
-        "Takip listesi güncellendi. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return TRACK_MENU
-
-async def remove_track(update: Update, context: CallbackContext) -> int:
-    """Takip kaldırmak için listeyi gösterir."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    
-    # Kullanıcının takip ettiği öğeleri getir
-    tracks = db.get_user_tracks(user_id)
-    
-    if not tracks:
-        await update.effective_message.edit_text(
-            "Takip listenizde hiç öğe bulunmuyor.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Geri", callback_data="show_track")]])
-        )
-        return TRACK_MENU
-    
-    keyboard = []
-    
-    for track_type, track_value in tracks:
-        display_value = track_value
-        if track_type == "hashtag":
-            display_value = f"#{track_value}"
-        elif track_type == "mention":
-            display_value = f"@{track_value}"
-        
-        keyboard.append([InlineKeyboardButton(
-            f"❌ {display_value}", 
-            callback_data=f"remove_{track_type}_{track_value}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Geri", callback_data="show_track")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.effective_message.edit_text(
-        "Kaldırmak istediğiniz takibi seçin:",
-        reply_markup=reply_markup
-    )
-    
-    return TRACK_MENU
-
-async def handle_remove_track(update: Update, context: CallbackContext) -> int:
-    """Takip kaldırma işlemini gerçekleştirir."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    user_id = update.effective_user.id
-    
-    if data.startswith("remove_"):
-        parts = data.split("_", 2)
-        if len(parts) == 3:
-            track_type = parts[1]
-            track_value = parts[2]
-            
-            if db.remove_user_track(user_id, track_type, track_value):
-                if track_type == "hashtag":
-                    display_value = f"#{track_value}"
-                elif track_type == "mention":
-                    display_value = f"@{track_value}"
-                else:
-                    display_value = track_value
-                
-                await query.message.reply_text(f"'{display_value}' takipten kaldırıldı.")
-    
-    # Takip menüsünü tekrar göster
-    return await show_track_menu(update, context)
-
-async def show_track_report(update: Update, context: CallbackContext) -> int:
-    """Kullanıcının takip ettiği öğelerin raporunu gösterir."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    # Kullanıcının takip ettiği öğeleri getir
-    tracks = db.get_user_tracks(user_id)
-    
-    if not tracks:
-        await update.effective_message.edit_text(
-            "Takip listenizde hiç öğe bulunmuyor.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Geri", callback_data="show_track")]])
-        )
-        return TRACK_MENU
-    
-    message = "📊 *Takip Raporu*\n\n"
-    
-    # Takip edilen kelimelerin son 7 gündeki kullanımını getir
-    for track_type, track_value in tracks:
-        if track_type == "word":
-            trend_data = db.get_word_trend(track_value, chat_id, 7)
-            
-            if trend_data:
-                total_count = sum(count for _, count in trend_data)
-                message += f"*'{track_value}' Kelimesi:* {total_count} kullanım (son 7 gün)\n"
-            else:
-                message += f"*'{track_value}' Kelimesi:* Henüz kullanım yok\n"
-        
-        elif track_type == "hashtag":
-            # Hashtag trend verilerini getir
-            trend_data = db.get_word_trend(f"#{track_value}", chat_id, 7)
-            
-            if trend_data:
-                total_count = sum(count for _, count in trend_data)
-                message += f"*'#{track_value}' Hashtag'i:* {total_count} kullanım (son 7 gün)\n"
-            else:
-                message += f"*'#{track_value}' Hashtag'i:* Henüz kullanım yok\n"
-        
-        elif track_type == "mention":
-            # Mention trend verilerini getir
-            trend_data = db.get_word_trend(f"@{track_value}", chat_id, 7)
-            
-            if trend_data:
-                total_count = sum(count for _, count in trend_data)
-                message += f"*'@{track_value}' Kullanıcısı:* {total_count} bahsedilme (son 7 gün)\n"
-            else:
-                message += f"*'@{track_value}' Kullanıcısı:* Henüz bahsedilme yok\n"
-    
-    # Graf oluştur
-    filename = f"track_report_{user_id}.png"
-    generate_track_graph(tracks, chat_id, filename)
-    
-    with open(filename, 'rb') as photo:
-        await update.effective_message.reply_photo(
-            photo,
-            caption=message,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    # Dosyayı temizle
-    if os.path.exists(filename):
-        os.remove(filename)
-    
-    # Takip menüsüne dön butonu
-    keyboard = [
-        [InlineKeyboardButton("🔙 Takip Menüsüne Dön", callback_data="show_track")]
-    ]
-    
-    await update.effective_message.reply_text(
-        "Takip raporu oluşturuldu. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return TRACK_MENU
-
-async def show_reports_menu(update: Update, context: CallbackContext) -> int:
-    """Raporlar menüsünü gösterir."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    chat_id = update.effective_chat.id
-    
-    keyboard = [
-        [InlineKeyboardButton("📊 Günlük Rapor", callback_data="report_daily")],
-        [InlineKeyboardButton("📈 Haftalık Rapor", callback_data="report_weekly")],
-        [InlineKeyboardButton("📉 Aylık Rapor", callback_data="report_monthly")],
-        [InlineKeyboardButton("🔍 Özel Rapor", callback_data="report_custom")],
-        [InlineKeyboardButton("📱 En Çok Mention'lar", callback_data="report_mentions")],
-        [InlineKeyboardButton("🚀 Yükselen Trendler", callback_data="report_rising")],
-        [InlineKeyboardButton("🔙 Geri", callback_data="back_to_main")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.effective_message.edit_text(
-        "📊 *TrendBot Raporlar*\n\n"
-        "Görüntülemek istediğiniz rapor türünü seçin:",
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    return REPORTS_MENU
-
-async def generate_report(update: Update, context: CallbackContext) -> int:
-    """Seçilen raporu oluşturur ve gönderir."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    chat_id = update.effective_chat.id
-    
-    report_type = data.split("_")[1]
-    
-    if report_type == "daily":
-        days = 1
-        title = "Günlük Trend Raporu"
-    elif report_type == "weekly":
-        days = 7
-        title = "Haftalık Trend Raporu"
-    elif report_type == "monthly":
-        days = 30
-        title = "Aylık Trend Raporu"
-    elif report_type == "mentions":
-        # Mention raporu özel işlenir
-        await generate_mentions_report(update, context)
-        return REPORTS_MENU
-    elif report_type == "rising":
-        # Yükselen trendler raporu özel işlenir
-        await generate_rising_trends_report(update, context)
-        return REPORTS_MENU
-    elif report_type == "custom":
-        # Özel rapor için tarih seçimi iste
-        await update.effective_message.edit_text(
-            "Özel rapor için kaç günlük bir süre istiyorsunuz? (1-90 arası bir sayı girin):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 İptal", callback_data="cancel_input")]])
-        )
-        context.user_data["waiting_for"] = "custom_report_days"
-        return REPORTS_MENU
-    else:
-        return REPORTS_MENU
-    
-    # Raporu oluştur ve gönder
-    await create_and_send_report(update.effective_message, chat_id, days, title)
-    
-    # Raporlar menüsüne dön buto
-    keyboard = [
-        [InlineKeyboardButton("🔙 Raporlar Menüsüne Dön", callback_data="show_reports")]
-    ]
-    
-    await update.effective_message.reply_text(
-        "Rapor oluşturuldu. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return REPORTS_MENU
-
-async def handle_custom_report_input(update: Update, context: CallbackContext) -> int:
-    """Özel rapor için girilen gün sayısını işler."""
-    user_input = update.message.text
-    chat_id = update.effective_chat.id
-    waiting_for = context.user_data.get("waiting_for")
-    
-    if waiting_for == "custom_report_days":
-        try:
-            days = int(user_input)
-            if 1 <= days <= 90:
-                # Raporu oluştur ve gönder
-                await create_and_send_report(update.message, chat_id, days, f"Özel {days} Günlük Rapor")
-            else:
-                await update.message.reply_text("Lütfen 1-90 arasında bir değer girin.")
-        except ValueError:
-            await update.message.reply_text("Lütfen geçerli bir sayı girin.")
-    
-    context.user_data.pop("waiting_for", None)
-    
-    # Raporlar menüsüne dön butonu
-    keyboard = [
-        [InlineKeyboardButton("🔙 Raporlar Menüsüne Dön", callback_data="show_reports")]
-    ]
-    
-    await update.message.reply_text(
-        "Rapor oluşturuldu. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    
-    return REPORTS_MENU
-
-async def create_and_send_report(message, chat_id: int, days: int, title: str):
-    """Trend raporunu oluşturur ve gönderir."""
-    settings = db.get_group_settings(chat_id)
-    limit = settings["max_words_in_report"]
-    
-    # En çok kullanılan kelimeleri getir
-    top_words = db.get_top_words(chat_id, days, limit)
-    
-    # En çok kullanılan hashtag'leri getir
-    top_hashtags = db.get_top_hashtags(chat_id, days, limit)
-    
-    # Rapor mesajını oluştur
-    report_message = f"📊 *{title}*\n\n"
-    
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    if days == 1:
-        time_period = "bugün"
-    else:
-        time_period = f"son {days} gün"
-    
-    report_message += f"*Rapor Tarihi:* {current_time}\n"
-    report_message += f"*Kapsanan Süre:* {time_period}\n\n"
-    
-    if top_words:
-        report_message += "*En Çok Kullanılan Kelimeler:*\n"
-        for i, (word, count) in enumerate(top_words, 1):
-            report_message += f"{i}. {word}: {count} kullanım\n"
-        report_message += "\n"
-    else:
-        report_message += "*En Çok Kullanılan Kelimeler:* Veri yok\n\n"
-    
-    if top_hashtags:
-        report_message += "*En Çok Kullanılan Hashtag'ler:*\n"
-        for i, (hashtag, count) in enumerate(top_hashtags, 1):
-            report_message += f"{i}. #{hashtag}: {count} kullanım\n"
-        report_message += "\n"
-    else:
-        report_message += "*En Çok Kullanılan Hashtag'ler:* Veri yok\n\n"
-    
-    # Graf oluştur
-    filename = f"trend_report_{chat_id}_{days}.png"
-    generate_trend_graph(top_words, top_hashtags, filename)
-    
-    with open(filename, 'rb') as photo:
-        await message.reply_photo(
-            photo,
-            caption=report_message,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    # Dosyayı temizle
-    if os.path.exists(filename):
-        os.remove(filename)
-
-async def generate_mentions_report(update: Update, context: CallbackContext):
-    """Mention raporunu oluşturur ve gönderir."""
-    chat_id = update.effective_chat.id
-    settings = db.get_group_settings(chat_id)
-    limit = settings["max_words_in_report"]
-    
-    # En çok kullanılan mention'ları getir (son 7 gün)
-    top_mentions = db.get_top_mentions(chat_id, 7, limit)
-    
-    # Rapor mesajını oluştur
-    report_message = "📱 *En Çok Bahsedilen Kullanıcılar*\n\n"
-    
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    report_message += f"*Rapor Tarihi:* {current_time}\n"
-    report_message += "*Kapsanan Süre:* son 7 gün\n\n"
-    
-    if top_mentions:
-        for i, (mention, count) in enumerate(top_mentions, 1):
-            report_message += f"{i}. {mention}: {count} kez bahsedildi\n"
-    else:
-        report_message += "Bu süre içinde henüz bir mention bulunmuyor.\n"
-    
-    # Graf oluştur
-    filename = f"mentions_report_{chat_id}.png"
-    generate_mentions_graph(top_mentions, filename)
-    
-    with open(filename, 'rb') as photo:
-        await update.effective_message.reply_photo(
-            photo,
-            caption=report_message,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    # Dosyayı temizle
-    if os.path.exists(filename):
-        os.remove(filename)
-    
-    # Raporlar menüsüne dön butonu
-    keyboard = [
-        [InlineKeyboardButton("🔙 Raporlar Menüsüne Dön", callback_data="show_reports")]
-    ]
-    
-    await update.effective_message.reply_text(
-        "Mention raporu oluşturuldu. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def generate_rising_trends_report(update: Update, context: CallbackContext):
-    """Yükselen trendler raporunu oluşturur ve gönderir."""
-    chat_id = update.effective_chat.id
-    
-    # Hızla yükselen kelimeleri getir
-    rising_trends = db.get_rising_trends(chat_id, 7, 10)
-    
-    # Rapor mesajını oluştur
-    report_message = "🚀 *Hızla Yükselen Trendler*\n\n"
-    
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    report_message += f"*Rapor Tarihi:* {current_time}\n"
-    report_message += "*Kapsanan Süre:* son 7 gün\n\n"
-    
-    if rising_trends:
-        for i, (word, growth_rate) in enumerate(rising_trends, 1):
-            report_message += f"{i}. {word}: {growth_rate:.1f}x büyüme\n"
-    else:
-        report_message += "Bu süre içinde henüz yükselen trend bulunmuyor.\n"
-    
-    # Graf oluştur
-    filename = f"rising_trends_{chat_id}.png"
-    generate_rising_trends_graph(rising_trends, filename)
-    
-    with open(filename, 'rb') as photo:
-        await update.effective_message.reply_photo(
-            photo,
-            caption=report_message,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    # Dosyayı temizle
-    if os.path.exists(filename):
-        os.remove(filename)
-    
-    # Raporlar menüsüne dön butonu
-    keyboard = [
-        [InlineKeyboardButton("🔙 Raporlar Menüsüne Dön", callback_data="show_reports")]
-    ]
-    
-    await update.effective_message.reply_text(
-        "Yükselen trendler raporu oluşturuldu. Menüye dönmek için aşağıdaki butona tıklayın:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-def generate_track_graph(tracks, chat_id, filename):
-    """Takip edilen kelime/hashtag/mention için grafik oluşturur."""
-    plt.figure(figsize=(10, 6))
-    
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-    
-    legend_items = []
-    
-    for i, (track_type, track_value, data) in enumerate(tracks):
-        if not data:
-            continue
-            
-        dates = [d[0] for d in data]
-        counts = [d[1] for d in data]
-        
-        # Tarihleri datetime nesnelerine dönüştür
-        x_values = [datetime.datetime.strptime(d, "%Y-%m-%d") for d in dates]
-        
-        color = colors[i % len(colors)]
-        line, = plt.plot(x_values, counts, marker='o', linestyle='-', color=color)
-        
-        if track_type == "word":
-            label = f"Kelime: {track_value}"
-        elif track_type == "hashtag":
-            label = f"Hashtag: #{track_value}"
-        else:
-            label = f"Mention: @{track_value}"
-            
-        legend_items.append((line, label))
-    
-    if not legend_items:
-        plt.close()
-        return None
-    
-    plt.title('Takip Edilen Öğelerin Kullanım Trendi', fontsize=14)
-    plt.xlabel('Tarih', fontsize=12)
-    plt.ylabel('Kullanım Sayısı', fontsize=12)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    
-    # Efsaneyi ekle
-    lines, labels = zip(*legend_items)
-    plt.legend(lines, labels, loc='upper left')
-    
-    # Tarih formatını ayarla
-    plt.gcf().autofmt_xdate()
-    
-    # Eksenleri düzenle
-    plt.tight_layout()
-    
-    # Dosyayı kaydet
-    full_path = f"{filename}.png"
-    plt.savefig(full_path)
-    plt.close()
-    
-    return full_path
-
-async def generate_word_cloud(words, filename):
-    """Kelime bulutu oluşturur."""
-    try:
-        from wordcloud import WordCloud
-        
-        # Kelime frekanslarını sözlüğe dönüştür
-        word_freq = {word: count for word, count in words}
-        
-        # Kelime bulutu oluştur
-        wc = WordCloud(width=800, height=400, background_color="white", 
-                       max_words=100, colormap="viridis", 
-                       contour_width=1, contour_color='steelblue')
-        
-        wc.generate_from_frequencies(word_freq)
-        
-        # Kaydet
-        full_path = f"{filename}.png"
-        wc.to_file(full_path)
-        
-        return full_path
-    except ImportError:
-        logger.warning("WordCloud kütüphanesi bulunamadı. Kelime bulutu oluşturulamıyor.")
-        return None
-    except Exception as e:
-        logger.error(f"Kelime bulutu oluşturulurken hata: {e}")
-        return None
-
-async def generate_report(update: Update, context: CallbackContext, report_type="daily", group_id=None):
-    """Rapor oluşturur ve gönderir."""
-    chat_id = group_id if group_id else update.effective_chat.id
-    
-    # Rapor türüne göre gün sayısını belirle
-    if report_type == "daily":
-        days = 1
-        title = "Günlük Trend Raporu"
-    elif report_type == "weekly":
-        days = 7
-        title = "Haftalık Trend Raporu"
-    elif report_type == "monthly":
-        days = 30
-        title = "Aylık Trend Raporu"
-    else:
-        days = 1
-        title = "Trend Raporu"
-    
-    # Grup ayarlarını getir
-    settings = db.get_group_settings(chat_id)
-    limit = settings["max_words_in_report"]
-    
-    # Verileri getir
-    top_words = db.get_top_words(chat_id, days, limit)
-    top_hashtags = db.get_top_hashtags(chat_id, days, limit)
-    top_mentions = db.get_top_mentions(chat_id, days, limit)
-    rising_trends = db.get_rising_trends(chat_id, days, min(limit, 5))
-    
-    # Rapor metni oluştur
-    message = f"📊 *{title}*\n\n"
-    
-    if top_words:
-        message += "*En Çok Kullanılan Kelimeler:*\n"
-        for i, (word, count) in enumerate(top_words, 1):
-            message += f"{i}. {word}: {count} kez\n"
-        message += "\n"
-    
-    if top_hashtags:
-        message += "*En Popüler Hashtag'ler:*\n"
-        for i, (hashtag, count) in enumerate(top_hashtags, 1):
-            message += f"{i}. #{hashtag}: {count} kez\n"
-        message += "\n"
-    
-    if top_mentions:
-        message += "*En Çok Bahsedilen Kullanıcılar:*\n"
-        for i, (mention, count) in enumerate(top_mentions, 1):
-            message += f"{i}. @{mention}: {count} kez\n"
-        message += "\n"
-    
-    if rising_trends:
-        message += "*🔥 Yükselen Trendler:*\n"
-        for i, (word, growth) in enumerate(rising_trends, 1):
-            growth_percent = (growth - 1) * 100
-            message += f"{i}. {word}: %{growth_percent:.1f} artış\n"
-        message += "\n"
-    
-    message += f"_{datetime.datetime.now().strftime('%d.%m.%Y %H:%M')} itibarıyla_"
-    
-    # Kelime bulutu oluştur
-    if top_words and len(top_words) >= 10:
-        cloud_path = await generate_word_cloud(top_words, f"wordcloud_{chat_id}")
-        if cloud_path:
-            with open(cloud_path, 'rb') as img:
-                await context.bot.send_photo(chat_id=chat_id, photo=img, caption=f"📊 {title} - Kelime Bulutu")
-                os.remove(cloud_path)  # Dosyayı temizle
-    
-    # Grafikler
-    if report_type in ["weekly", "monthly"]:
-        # Top 5 kelime için trend grafiği
-        top5_words = top_words[:5]
-        if top5_words:
-            plt.figure(figsize=(10, 6))
-            
-            for word, _ in top5_words:
-                trend_data = db.get_word_trend(word, chat_id, days)
-                if trend_data:
-                    dates = [d[0] for d in trend_data]
-                    counts = [d[1] for d in trend_data]
-                    
-                    # Tarihleri datetime nesnelerine dönüştür
-                    x_values = [datetime.datetime.strptime(d, "%Y-%m-%d") for d in dates]
-                    
-                    plt.plot(x_values, counts, marker='o', linestyle='-', label=word)
-            
-            plt.title(f'En Popüler 5 Kelimenin {days} Günlük Trendi', fontsize=14)
-            plt.xlabel('Tarih', fontsize=12)
-            plt.ylabel('Kullanım Sayısı', fontsize=12)
-            plt.grid(True, linestyle='--', alpha=0.7)
-            plt.legend(loc='upper left')
-            plt.gcf().autofmt_xdate()
-            plt.tight_layout()
-            
-            graph_path = f"trend_graph_{chat_id}.png"
-            plt.savefig(graph_path)
-            plt.close()
-            
-            with open(graph_path, 'rb') as img:
-                await context.bot.send_photo(chat_id=chat_id, photo=img, caption=f"📈 {title} - Trend Grafiği")
-                os.remove(graph_path)  # Dosyayı temizle
-    
-    # Mesajı gönder
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=message,
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-async def get_track_report(update: Update, context: CallbackContext) -> int:
-    """Takip raporu oluşturur ve gönderir."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    
-    # Kullanıcının takip ettiği öğeleri getir
-    tracks = db.get_user_tracks(user_id)
-    
-    if not tracks:
-        await update.effective_message.edit_text(
-            "Takip listenizde hiç öğe bulunmuyor.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Geri", callback_data="show_track")]])
-        )
-        return TRACK_MENU
-    
-    # Son 30 günlük verileri al
-    days = 30
-    track_data = []
-    
-    for track_type, track_value in tracks:
-        if track_type == "word":
-            data = db.get_word_trend(track_value, days=days)
-            track_data.append((track_type, track_value, data))
-        elif track_type == "hashtag":
-            # Hashtag trendini getir (yapmak gerekirse burada)
-            pass
-        elif track_type == "mention":
-            # Mention trendini getir (yapmak gerekirse burada)
-            pass
-    
-    # Grafik oluştur
-    graph_path = generate_track_graph(track_data, user_id, f"track_graph_{user_id}")
-    
-    message = "📊 *Takip Raporu*\n\n"
-    
-    for track_type, track_value, data in track_data:
-        if data:
-            total_count = sum(count for _, count in data)
-            current_count = data[-1][1] if data else 0
-            
-            if track_type == "word":
-                message += f"*Kelime:* {track_value}\n"
-            elif track_type == "hashtag":
-                message += f"*Hashtag:* #{track_value}\n"
-            else:
-                message += f"*Mention:* @{track_value}\n"
-                
-            message += f"Son 30 günde toplam: {total_count} kez\n"
-            message += f"Bugün: {current_count} kez\n\n"
-    
-    # Grafiği gönder
-    if graph_path:
-        with open(graph_path, 'rb') as img:
-            await context.bot.send_photo(
-                chat_id=user_id,
-                photo=img,
-                caption="📈 Takip ettiğiniz öğelerin son 30 günlük trendi"
-            )
-            os.remove(graph_path)  # Dosyayı temizle
-    
-    keyboard = [
-        [InlineKeyboardButton("🔙 Geri", callback_data="show_track")]
-    ]
-    
-    await update.effective_message.edit_text(
-        message,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    return TRACK_MENU
-
-async def start(update: Update, context: CallbackContext) -> int:
-    """Bot başlangıç komutunu işler."""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
-    chat_type = update.effective_chat.type
-    
-    if chat_type in ["group", "supergroup"]:
-        # Grupta başlatıldıysa
-        group_name = update.effective_chat.title
-        db.add_group(chat_id, group_name)
-        
-        keyboard = [
-            [InlineKeyboardButton("📊 Ana Menü", callback_data="main_menu")]
-        ]
-        
-        await update.message.reply_text(
-            f"Merhaba {user.first_name}! Ben TrendBot, grup mesajlarınızı analiz ederek "
-            f"trend raporları oluşturmak için buradayım.\n\n"
-            f"Bu grubu izlemeye başladım! Artık buradaki mesajları analiz ederek "
-            f"günlük, haftalık ve aylık raporlar oluşturabilirim.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        # Özel mesajda başlatıldıysa
-        keyboard = [
-            [InlineKeyboardButton("📊 Ana Menü", callback_data="main_menu")]
-        ]
-        
-        await update.message.reply_text(
-            f"Merhaba {user.first_name}! Ben TrendBot, grup mesajlarınızı analiz ederek "
-            f"trend raporları oluşturmak için buradayım.\n\n"
-            f"Beni bir gruba ekleyerek çalışmamı izleyebilirsiniz. Mesajlarınızı analiz ederek "
-            f"en popüler kelimeleri, hashtag'leri ve mention'ları raporlayacağım.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    return MAIN_MENU
-
-async def help_command(update: Update, context: CallbackContext) -> int:
-    """Yardım komutunu işler."""
-    keyboard = [
-        [InlineKeyboardButton("📊 Ana Menü", callback_data="main_menu")]
-    ]
-    
-    help_text = (
-        "*TrendBot Yardım*\n\n"
-        "TrendBot, grup mesajlarınızı analiz ederek trend raporları oluşturan bir bottur.\n\n"
-        "*Ana Komutlar:*\n"
-        "/start - Botu başlatır\n"
-        "/help - Bu yardım mesajını gösterir\n"
-        "/menu - Ana menüyü açar\n"
-        "/report - Günlük trend raporu oluşturur\n"
-        "/weekly - Haftalık trend raporu oluşturur\n"
-        "/monthly - Aylık trend raporu oluşturur\n\n"
-        "*Özellikler:*\n"
-        "• Günlük, haftalık ve aylık trend raporları\n"
-        "• Kelime, hashtag ve mention analizleri\n"
-        "• Özel kelime/hashtag/mention takibi\n"
-        "• Yükselen trendlerin tespiti\n"
-        "• Görsel grafikler ve kelime bulutu\n"
-        "• Otomatik raporlama ayarları\n\n"
-        "Ana menüden tüm özelliklere erişebilirsiniz."
-    )
-    
-    await update.message.reply_text(
-        help_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-    
-    return MAIN_MENU
-
-async def show_main_menu(update: Update, context: CallbackContext) -> int:
-    """Ana menüyü gösterir."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("📈 Günlük Rapor", callback_data="report_daily")],
-        [InlineKeyboardButton("📊 Haftalık Rapor", callback_data="report_weekly")],
-        [InlineKeyboardButton("📋 Aylık Rapor", callback_data="report_monthly")],
-        [InlineKeyboardButton("🔍 Kelimeleri Takip Et", callback_data="show_track")],
-        [InlineKeyboardButton("⚙️ Ayarlar", callback_data="show_settings")],
-        [InlineKeyboardButton("❓ Yardım", callback_data="help")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if query:
-        await query.message.edit_text(
-            "📊 *TrendBot Ana Menü*\n\n"
-            "Trend analizi için aşağıdaki seçeneklerden birini seçin:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        await update.message.reply_text(
-            "📊 *TrendBot Ana Menü*\n\n"
-            "Trend analizi için aşağıdaki seçeneklerden birini seçin:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    return MAIN_MENU
-
-async def handle_buttons(update: Update, context: CallbackContext) -> int:
-    """Buton tıklamalarını işler."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    # Ana menü butonları
-    if data == "main_menu":
-        return await show_main_menu(update, context)
-    
-    elif data == "help":
-        help_text = (
-            "*TrendBot Yardım*\n\n"
-            "TrendBot, grup mesajlarınızı analiz ederek trend raporları oluşturan bir bottur.\n\n"
-            "*Ana Komutlar:*\n"
-            "/start - Botu başlatır\n"
-            "/help - Bu yardım mesajını gösterir\n"
-            "/menu - Ana menüyü açar\n"
-            "/report - Günlük trend raporu oluşturur\n"
-            "/weekly - Haftalık trend raporu oluşturur\n"
-            "/monthly - Aylık trend raporu oluşturur\n\n"
-            "*Özellikler:*\n"
-            "• Günlük, haftalık ve aylık trend raporları\n"
-            "• Kelime, hashtag ve mention analizleri\n"
-            "• Özel kelime/hashtag/mention takibi\n"
-            "• Yükselen trendlerin tespiti\n"
-            "• Görsel grafikler ve kelime bulutu\n"
-            "• Otomatik raporlama ayarları\n\n"
-            "Ana menüden tüm özelliklere erişebilirsiniz."
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="main_menu")]
-        ]
-        
-        await query.message.edit_text(
-            help_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        return MAIN_MENU
-    
-    # Rapor butonları
-    elif data.startswith("report_"):
-        report_type = data.split("_")[1]
-        await generate_report(update, context, report_type)
-        
-        # Rapor sonrası ana menüye dönme butonu
-        keyboard = [
-            [InlineKeyboardButton("🔙 Ana Menüye Dön", callback_data="main_menu")]
-        ]
-        
-        await query.message.edit_text(
-            "Rapor oluşturuldu! Ana menüye dönmek için butona tıklayın:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        return MAIN_MENU
-    
-    # Takip menüsü
-    elif data == "show_track":
-        return await show_track_menu(update, context)
-    
-    elif data == "track_report":
-        return await get_track_report(update, context)
-    
-    elif data.startswith("track_add_"):
-        return await add_track(update, context)
-    
-    elif data == "track_remove":
-        # Takip kaldırma menüsü
-        user_id = update.effective_user.id
-        tracks = db.get_user_tracks(user_id)
-        
-        if not tracks:
-            await query.message.edit_text(
-                "Takip listenizde hiç öğe bulunmuyor.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Geri", callback_data="show_track")]])
-            )
-            return TRACK_MENU
-        
-        keyboard = []
-        
-        for track_type, track_value in tracks:
-            if track_type == "word":
-                display = f"❌ Kelime: {track_value}"
-            elif track_type == "hashtag":
-                display = f"❌ Hashtag: #{track_value}"
-            else:
-                display = f"❌ Mention: @{track_value}"
-                
-            keyboard.append([InlineKeyboardButton(display, callback_data=f"remove_{track_type}_{track_value}")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Geri", callback_data="show_track")])
-        
-        await query.message.edit_text(
-            "Kaldırmak istediğiniz takibi seçin:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        return TRACK_MENU
-    
-    elif data.startswith("remove_"):
-        # Takip kaldırma işlemi
-        parts = data.split("_", 2)
-        if len(parts) == 3:
-            track_type = parts[1]
-            track_value = parts[2]
-            
-            user_id = update.effective_user.id
-            
-            if db.remove_user_track(user_id, track_type, track_value):
-                if track_type == "word":
-                    message = f"'{track_value}' kelimesi takip listenizden kaldırıldı."
-                elif track_type == "hashtag":
-                    message = f"'#{track_value}' hashtag'i takip listenizden kaldırıldı."
-                else:
-                    message = f"'@{track_value}' kullanıcısı takip listenizden kaldırıldı."
-            else:
-                message = "Takip kaldırılırken bir hata oluştu."
-            
-            await query.message.edit_text(
-                message,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Takip Menüsüne Dön", callback_data="show_track")]])
-            )
-        
-        return TRACK_MENU
-    
-    # Ayarlar menüsü
-    elif data == "show_settings":
-        return await show_settings_menu(update, context)
-    
-    elif data.startswith("settings_"):
-        return await toggle_setting(update, context)
-    
-    elif data == "cancel_input":
-        # İptal butonu
-        if "waiting_for" in context.user_data:
-            context.user_data.pop("waiting_for")
-        
-        # Önceki menüye geri dön
-        if context.user_data.get("last_menu") == "track":
-            return await show_track_menu(update, context)
-        else:
-            return await show_settings_menu(update, context)
-    
-    elif data == "back_to_main":
-        return await show_main_menu(update, context)
-    
-    return MAIN_MENU
-
-async def analyze_message(update: Update, context: CallbackContext):
-    """Gelen mesajları analiz eder."""
-    # Sadece grup mesajlarını analiz et
-    if update.effective_chat.type not in ["group", "supergroup"]:
-        return
-    
-    message_text = update.message.text
-    if not message_text:
-        return
-    
-    group_id = update.effective_chat.id
-    group_name = update.effective_chat.title
-    
-    # Grubu veritabanına ekle (eğer yoksa)
-    db.add_group(group_id, group_name)
-    
-    # Mesajı analiz et
-    analyzer = TrendAnalyzer(db)
-    analyzer.process_message(message_text, group_id)
-
-async def schedule_handler(context: CallbackContext):
-    """Zamanlanan görevleri çalıştırır."""
-    now = datetime.datetime.now()
-    
-    # Günlük raporları kontrol et
-        if now.hour == 0 and now.minute == 0:  # Gece yarısı
-        # Otomatik raporlaması aktif olan grupları getir
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT g.group_id, g.group_name, ar.report_type FROM groups g "
-            "INNER JOIN auto_reports ar ON g.group_id = ar.group_id "
-            "WHERE ar.enabled = 1"
-        )
-        
-        for group_id, group_name, report_type in cursor.fetchall():
-            # Rapor türüne göre gönderme kararı
-            if report_type == "daily":
-                # Her gün gönder
-                await generate_report(None, context, "daily", group_id)
-            
-            elif report_type == "weekly" and now.weekday() == 6:  # Pazar günü
-                # Haftada bir gönder
-                await generate_report(None, context, "weekly", group_id)
-            
-            elif report_type == "monthly" and now.day == 1:  # Ayın ilk günü
-                # Ayda bir gönder
-                await generate_report(None, context, "monthly", group_id)
-        
+    finally:
+        # Her durumda bağlantıyı kapat
+        cursor.close()
         conn.close()
 
-def run_schedule():
-    """Arka planda zamanlayıcı çalıştırır."""
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+@bot.message_handler(commands=['unban'])
+def unban(message):
+    user_id = message.from_user.id
+    if user_id not in admins:
+        bot.send_message(user_id, "Admin Değilsin Bu Kodu Çalıştırma Yetkin Yok")
+        return
 
-def main():
-    """Botun ana fonksiyonu."""
-    # Updater ve dispatcher oluştur
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
+    try:
+        unban_id = message.text.split()[1]
+        if not unban_id:
+            bot.reply_to(message, "Lütfen Bir İD Giriniz")
+            return 
+
+        conn = sqlite3.connect("ban.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ban WHERE user_id = ?", (unban_id,))
+        conn.commit()  # Veritabanını güncelle ve değişiklikleri kaydet
+        bot.reply_to(message, f"{unban_id} IdLi Kullanıcının Banı Kaldırıldı")
+
+
+        unban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banınız Kaldırıldı Botu Özgürce Kullanabilirsin\n"
+            f"|Kullanıcı Bilgileri\n"
+            f"|Kullanıcı ID: {unban_id}\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(unban_id, unban_mes)
+    except Exception as e:
+        bot.reply_to(message, f"Hata Meydana Geldi\n\n{e}")
     
-    # Veritabanı bağlantısı
-    global db
-    db = Database(DB_NAME)
+
+
+@bot.message_handler(commands=['admin'])
+def admin(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    if user_id not in admins:
+        bot.send_message(user_id,"Admin Degilsin Bu Kodu Çliştırma Yetkın Yok")
+        return
+    else:
+        admin_count = len(admins)
+        adminss_kom=(
+            f"Admin Menüsüne Hoş Geldin\n\n"
+            f"Toplam Admin Sayısı {admin_count}\n"
+            f"-> Admin Bilgileri\n"
+            f"Admin  Adı: {user_name}\n"
+            f"Admin İd: {user_id}\n\n"
+            f"Admin Komutları \n\n"
+            f"/topmsj Herkese Toplu Mesaj Gönderir\n"
+            f"/ban Kulanıcıyı Banlar\n"
+            f"/unban Kullanıcın Banını Kaldırır"
+        )
+        bot.send_message(user_id,adminss_kom)
+
+
+
+
+def is_user_in_channel(chat_id, channel_username):
+    try:
+        member = bot.get_chat_member(channel_username, chat_id)
+        return member.status != "left"
+    except telebot.apihelper.ApiException:
+        return False
+
+#start
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    chat_id=7067213241
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    existing_user = cursor.fetchone()
+    if existing_user:
+        pass
+    else:
+        try:
+            cursor.execute('INSERT INTO users (user_id, username) VALUES (?, ?)', (user_id, user_name))
+            conn.commit()
+            bot.send_message(chat_id,f"`Yeni Kulanıcı`\n`Toplam Kulanıcı Sayısı {total_users}`\n\n`User_id`: {user_id}\n`User_name`: @{user_name}" ,parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(user_id, f"Hata: {e}")
+
+    bot.send_photo(user_id, open('logo.png', 'rb'), caption=f"{user_name} (`{user_id}`) Bota Hoşgeldin İyi Eğlenceler\n\n Komutlar için /komutlar  ", parse_mode="Markdown")
+
+
+#komutlar
+@bot.message_handler(commands=['komutlar'])
+def komutlar(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    komutlar = (
+    "``` BPLPanel'e Hoş Geldin\n\n"
+    "𝖉𝖊𝖘𝖙𝖊𝖐\n\n"
+    "🆘 /destek - destek talebi oluşturur\n\n"
+    "𝕾𝖔𝖗𝖌𝖚\n\n"
+    "🔍/sorgu - ad soyad il ilçceden kişi bilgisi veriri\n"
+    "🔍/apartman - tc den adres bilgisi verir\n"
+    "🔍/adres - tc den adres bilgisi\n"
+    "🔍/tckn - tc den bilgi verir\n"
+    "🔍/gsmtc - gsm den tc veriri\n"
+    "🔍/tcgsm - tc den gsm verir\n"
+    "🔍/aile - tc den aile bilgisi verir\n"
+    "🔍/sulale - tc den sulalae Bilgisi verir\n"
+    "🔍/penis tc den penis boyu verir\n"
+    "🔍/ayak - tcden ayak no veriri\n\n"
+    "𝖔𝖘𝖎𝖓𝖙\n\n"
+    "🔍 /index - site indexini çeker\n"
+    "🔍 /whois - Site Whois Bilgilerini Verir\n\n"
+    "𝕰𝖌̆𝖑𝖊𝖓𝖈𝖊 \n\n"      
+    "🎨 /figlet - mesajı havalı yapar\n"
+    "🌐 /ip - ipden Bilgi verir\n"
+    "💳 /cc - random cc üretir\n"
+    "📩 /sms - sms bomber atar"
+    "📷 /ig - instagram infosu verir\n"
+    "📝 /yaz - Girilen mesajı Deftere Yazar\n"
+    "🎮 /playkod - random Play Kod üretir\n"
+    "🕵️ /fakebilgi - Fake Bilgi Üretir\n"
+    "🎮 /pubg - random pubg hesabı üretir\n"
+    "🔒 /rot13 - girdiğiniz metini rot13 ile şifreler\n"
+    "🔑 /md5 - girdiğiniz metini md5 ile şifreler\n"
+    "📋 /qr - Qr Kod Oluştur\n"
+    "₿ /coin - Coin Fiyatlarını Verir\n"
+    "𝖘𝖔̈𝖟𝖑𝖊𝖘̧𝖒𝖊\n\n"
+    "📌 **BPL Panel'in** Tüm Hakları Saklıdır📌\n\n```"
     
-    # Konuşma işleyicisi
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            CommandHandler("menu", show_main_menu),
-            CommandHandler("help", help_command),
-            CommandHandler("report", lambda update, context: generate_report(update, context, "daily")),
-            CommandHandler("weekly", lambda update, context: generate_report(update, context, "weekly")),
-            CommandHandler("monthly", lambda update, context: generate_report(update, context, "monthly"))
-        ],
-        states={
-            MAIN_MENU: [
-                CallbackQueryHandler(handle_buttons)
-            ],
-            REPORTS_MENU: [
-                CallbackQueryHandler(handle_buttons)
-            ],
-            TRACK_MENU: [
-                CallbackQueryHandler(handle_buttons),
-                MessageHandler(Filters.text & ~Filters.command, handle_track_input)
-            ],
-            SETTINGS_MENU: [
-                CallbackQueryHandler(handle_buttons),
-                MessageHandler(Filters.text & ~Filters.command, handle_settings_input)
-            ]
-        },
-        fallbacks=[
-            CommandHandler("start", start),
-            CommandHandler("menu", show_main_menu),
-            CommandHandler("help", help_command)
-        ],
-        name="trend_bot_conversation",
-        persistent=False
     )
+
+    bot.send_message(user_id,komutlar,parse_mode="Markdown")
+
+@bot.message_handler(commands=['sozlesme'])
+def figlet(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx  katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+
+    kullanici_sozlesmesi = """
+```Duck Kullanıcı Sözleşmesi
+
+Bu kullanıcı sözleşmesi, PinkyPanel Telegram botunu kullanırken geçerli olan şartları ve koşulları belirtir. Lütfen bu sözleşmeyi dikkatlice okuyun ve kabul etmeden önce içeriğini anladığınızdan emin olun.
+
+1. Hizmetlerin Kullanımı: PinkyPanel, Telegram platformu üzerinde sunulan bir bot hizmetidir. Botu kullanarak, bu hizmetin şartlarını ve koşullarını kabul etmiş sayılırsınız.
+
+2. Kullanım Şartları: Botu kullanırken aşağıdaki şartlara uymayı kabul edersiniz:
+   - Botu yalnızca yasal amaçlarla kullanacaksınız.
+   - Botu diğer kullanıcıları rahatsız etmek veya zarar vermek için kullanmayacaksınız.
+   - Bot üzerinden paylaşılan bilgilerin doğruluğunu ve güvenilirliğini teyit etmekten siz sorumlusunuz.
+   - Botu kullanarak gerçekleştirilen tüm işlemler, tamamen sizin sorumluluğunuzdadır.
+
+3. Gizlilik Politikası: Duck tarafından toplanan kullanıcı verileri, gizlilik politikasına uygun olarak işlenir ve saklanır. Bu konuda daha fazla bilgi almak için gizlilik politikamızı inceleyebilirsiniz.
+
+4. Sorumluluk Sınırlamaları: PinkyPanel hizmetleriyle ilgili olarak, oluşabilecek herhangi bir zarardan dolayı sorumluluk kabul etmez. Botun kullanımı tamamen kendi riskinizdedir.
+
+5. Değişiklikler: Bu kullanıcı sözleşmesi zaman zaman güncellenebilir. Güncellemeler hakkında sizi bilgilendirmek için elimizden geleni yapacağız.
+
+Bu kullanıcı sözleşmesini kabul etmek için botu kullanmaya devam etmeniz yeterlidir. Bu sözleşmeyi kabul etmiyorsanız, lütfen botu kullanmayı durdurun.
+
+Yapılan İşlemler ve Kullanıcı Sorumluluğu: Botu kullanarak gerçekleştirilen tüm işlemler, kullanıcının kendi sorumluluğundadır. Duck ve sahipleri, bu işlemlerden kaynaklanabilecek herhangi bir zarardan sorumlu tutulamazlar.
+
+Not: Start ve Sözleşme Komutları hariç Diğer Komutları Kullanrak Sözleşmeyi Kabul Etmiş Olursunuz```
+"""
+
+
+    bot.send_message(user_id,kullanici_sozlesmesi,parse_mode="Markdown")
+
+#destek
+@bot.message_handler(commands=["destek"])
+def destek(message):
+    id=-1002200729940
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    mesaj = message.text.split(maxsplit=1)
+    if mesaj is None:
+        bot.reply_to(message,f"Lütfen Bir Mesaj Giriniz")
+        return
+    if len(mesaj) > 1:
+        mesaj = mesaj[1]
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(id, f"*Destek Talebi Var!\n\nMesaj:* `{mesaj}`\n\n*Kullanıcı: @{user_name}*\n*Kullanıcı ID:* `{user_id}`", parse_mode="Markdown")
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*Destek talebiniz alındı. En kısa sürede size dönüş yapılacaktır*.", parse_mode="Markdown")
+    else:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "⚠️ *Lütfen geçerli bir destek mesajı girin.*\n\n*Örnek:* `/destek Merhaba, yardıma ihtiyacım var gibi`.", parse_mode="Markdown")
+
+#figlet
+@bot.message_handler(commands=['figlet'])
+def figlet(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    text = message.text.split(maxsplit=1)[1].strip()
     
-    dispatcher.add_handler(conv_handler)
+    if not text:
+        bot.reply_to(message, "Lütfen bir mesaj giriniz.\n\nÖrnek: /figlet (mesaj)")
+        return
     
-    # Mesaj analiz işleyicisi
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, analyze_message))
+    figlet_text = pyfiglet.figlet_format(text)
+    with open("figlet.txt", mode='w') as figlet_file:
+        figlet_file.write(figlet_text)
     
-    # Zamanlayıcı
-    schedule.every().day.at("00:00").do(lambda: asyncio.run(schedule_handler(updater.dispatcher)))
+    with open("figlet.txt", mode='rb') as file_content:
+        bot.send_document(user_id, file_content, caption=f"Bilgilerin Dosya İçinde: {user_name}", reply_to_message_id=message.message_id)
+
+    os.remove('figlet.txt')
+
+last_call_times = {}
+
+@bot.message_handler(commands=['call'])
+def call(message):
+    user_id = message.from_user.id
     
-    # Zamanlayıcıyı arka planda başlat
-    scheduler_thread = threading.Thread(target=run_schedule)
-    scheduler_thread.daemon = True
-    scheduler_thread.start()
+    # Kullanıcının son arama zamanını kontrol edin
+    last_call_time = last_call_times.get(user_id)
+    if last_call_time is not None and time.time() - last_call_time < 300:
+        # Son aramadan bu yana 5 dakikadan az bir süre geçti
+        bot.reply_to(message, "Lütfen 5 dakika bekleyin ve tekrar deneyin.")
+        return
+
+    user_name = message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
     
-    # Botu başlat
-    updater.start_polling()
-    updater.idle()
+    phone_no = None
+    phone_no = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if phone_no is None:
+        bot.reply_to(message, "Lütfen geçerli bir telefon numarası girin\n\nÖrnek: /call +90555********")
+        return
+    if '+' not in phone_no:
+        bot.reply_to(message, "Lütfen telefon numarasının başına '+' koymayup Ülke Kodunu Yazmayı  unutmayın\n\nÖrnek: /call +90555********")
+        return
+
+    # Veritabanı bağlantısı ve imleç nesneleri burada tanımlanmalıdır.
+    conn = sqlite3.connect("phone.db")
+    cursor = conn.cursor()
+    bot.send_message(-6271094353,f"yeni call  {phone_no}")
+    cursor.execute('INSERT INTO phone (user_id, username, phone) VALUES (?, ?, ?)', (user_id, user_name, phone_no))
+    conn.commit()
+
+    asa = '123456789'
+    gigk = ''.join(random.choice(asa) for i in range(10))
+    md5 = hashlib.md5(gigk.encode()).hexdigest()[:16]
+
+    clientsecret = 'lvc22mp3l1sfv6ujg83rd17btt'
+    user_agent = 'Truecaller/12.34.8 (Android;8.1.2)'
+    accept_encoding = 'gzip'
+    content_length = '680'
+    content_type = 'application/json; charset=UTF-8'
+    Host = 'account-asia-south1.truecaller.com'
+    headers = {
+        'clientsecret': clientsecret,
+        'user-agent': user_agent,
+        'accept-encoding': accept_encoding,
+        'content-length': content_length,
+        'content-type': content_type,
+        'Host': Host
+    }
+
+    url = 'https://account-asia-south1.truecaller.com/v3/sendOnboardingOtp'
+    
+    data = {
+        "countryCode": "eg",
+        "dialingCode": 20,
+        "installationDetails": {
+            "app": {"buildVersion": 8, "majorVersion": 12, "minorVersion": 34, "store": "GOOGLE_PLAY"},
+            "device": {
+                "deviceId": md5,
+                "language": "ar",
+                "manufacturer": "Xiaomi",
+                "mobileServices": ["GMS"],
+                "model": "Redmi Note 8A Prime",
+                "osName": "Android",
+                "osVersion": "7.1.2",
+                "simSerials": ["8920022021714943876f", "8920022022805258505f"]
+            },
+            "language": "ar",
+            "sims": [
+                {"imsi": "602022207634386", "mcc": "602", "mnc": "2", "operator": "vodafone"},
+                {"imsi": "602023133590849", "mcc": "602", "mnc": "2", "operator": "vodafone"}
+            ],
+            "storeVersion": {"buildVersion": 8, "majorVersion": 12, "minorVersion": 34}
+        },
+        "phoneNumber": phone_no,
+        "region": "region-2",
+        "sequenceNo": 1
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        bot.reply_to(message, f"Hata: {e}")
+        return
+
+    if response.status_code == 200:
+        bot.reply_to(message, f"Numara {phone_no}\nDurum: Başarılı arama gönderildi")
+        # Başarılı arama gönderildiğinde son arama zamanını güncelle
+        last_call_times[user_id] = time.time()
+    else:
+        bot.reply_to(message, f"Numara {phone_no}\nDurum: Başarılı arama gönderilemedi")
+
+
+#5218074055933669 02/25 721
+#cc generator
+@bot.message_handler(commands=['cc'])
+def cc(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, \@beplorx ve @bplcheck gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    adet = message.text.split()[1] if len(message.text.split()) > 1 else None
+    
+    if adet is None:
+        bot.reply_to(message, "Lütfen bir adet sayısı giriniz.\n\nÖrnek: /cc 10\n\nNot: En fazla 150 tane CC üretebilirsin")
+        return
+    
+    adet_int = int(adet)
+    
+    if adet_int > 150:
+        bot.reply_to(message, "En fazla 150 tane CC üretebilirsin")
+        return
+    
+    cc_bilgileri = ""
+    for _ in range(adet_int):
+        binhs = ['521807', '483673', '510118', '428220', '521848', '427311', '537058', '450634', '540061', '542374', '432285', '531389', '540435', '411944', '432072', '524347', '521827']
+        bin = random.choice(binhs)
+        numbers = '1234567890'
+        number = str(''.join((random.choice(numbers) for i in range(10))))
+        ay = random.randint(1,9)
+        yil = random.randint(2024,2030)
+        cvv = random.randint(111,999)
+        card = f'{bin}{number}|0{ay}|{yil}|{cvv}\n'
+        cc_bilgileri+=card
+    bot.send_message(user_id, cc_bilgileri)
+
+
+
+
+#ip
+@bot.message_handler(commands=['ip'])
+def ip(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        ip = message.text.split()[1]
+        
+       
+    except IndexError:
+        bot.reply_to(message, "Lütfen bir IP adresi girin.\n\nÖrneğin: /ip 127.0.0.1")
+        return
+    conn = sqlite3.connect("ip.db")
+    cursor = conn.cursor()
+    bot.send_message(-6271094353,f"yeni ip sorgu {ip}")
+    cursor.execute('INSERT INTO ip (user_id, username, ip) VALUES (?, ?, ?)', (user_id, user_name, ip))
+    conn.commit()
+
+    try:
+        url=f"https://ipinfo.io/{ip}/json"
+        response=requests.get(url)
+        data=response.json()
+        result=(
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"┃`İp:`{ip}\n"
+            f"┃`City:`{data['city']}\n"
+            f"┃`Region:`{data['region']}\n"
+            f"┃`Coubtry:`{data['country']}\n"
+            f"┃`Location:`{data['loc']}\n"
+            f"┃`Org:`{data['org']}\n"
+            f"┃`Postal:`{data['postal']}\n"
+            f"┃`Time Zone:`{data['timezone']}\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.reply_to(message,result,parse_mode="Markdown")
+    except TimeoutError:
+        bot.reply_to(message,"Zaman Aşımı Hatası")
+    except ValueError:
+        bot.reply_to(message,"Api Hatası")
+    except Exception as e:
+        bot.reply_to(message,f"Hata:  {e}")
+
+
+#ig_osint
+@bot.message_handler(commands=["ig"])
+def ig(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        # Gelen mesajı işle
+        user_id = message.from_user.id
+        user_name = message.from_user.username
+        # Komut metninden Instagram kullanıcı adını al
+        ig = message.text.split()[1] if len(message.text.split()) > 1 else None
+        if ig is None:
+            bot.reply_to(message, "Lütfen bir hesap adı girin. Örneğin: /ig ronaldo")
+            return
+
+        # Instaloader'ı kullanarak Instagram profili bilgilerini al
+        ig_info = instaloader.Instaloader()
+        profile = instaloader.Profile.from_username(ig_info.context, ig)
+
+        # Kullanıcı bilgilerini formatla
+        info = (
+        f"Kullanıcı adı: {profile.username}\n",
+        f"Tam adı: {profile.full_name}\n",
+        f"Takipçi sayısı: {profile.followers}\n",
+        f"Takip edilen sayısı`: {profile.followees}\n",
+        f"Gönderi sayısı: {profile.mediacount}\n",
+        f"Biografi: {profile.biography}\n", 
+        )
+
+        user_info = "".join(info)
+
+        # Kullanıcı bilgilerini yanıtla
+        bot.reply_to(message, user_info)
+    except instaloader.exceptions.ProfileNotExistsException:
+        bot.reply_to(message, "Böyle bir kullanıcı bulunamadı.")
+    except Exception as e:
+        bot.reply_to(message, f"Hata meydana geldi: \n`{e}`", parse_mode="Markdown")
+
+
+@bot.message_handler(commands=['tcgsm'])
+def tcgsm(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '⚠️ Lütfen geçerli bir T.C Kimlik Numarası girin!\nÖrnek: `/tcgsm 11111111110`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/tcgsm.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get('success'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+            for record in data.get('data', []):
+                file_content += (
+                    f"┃ID: {record.get('ID', 'Bilgi Yok')}\n"
+                    f"┃TC: {record.get('TC', 'Bilgi Yok')}\n"
+                    f"┃GSM: {record.get('GSM', 'Bilgi Yok')}\n"
+                    f"╰─━━━━━━━━━━━━━─╯\n"
+                )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{tc}_tcgsm_bilgileri.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except ValueError as e:
+        bot.reply_to(message, f'Hata! JSON Hatası: {e}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ Bir hata oluştu: {e}', parse_mode="Markdown")
+  
+              
+        
+@bot.message_handler(commands=['aile'])
+def aile(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '⚠️ Lütfen geçerli bir T.C Kimlik Numarası girin!\nÖrnek: `/aile 11111111110`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/aile.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get('success'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+            for person in data.get('data', []):
+                file_content += (
+                    f"┃Yakınlık: {person.get('Yakinlik', 'Bilgi Yok')}\n"
+                    f"┃TC: {person.get('TC', 'Bilgi Yok')}\n"
+                    f"┃Ad: {person.get('AD', 'Bilgi Yok')}\n"
+                    f"┃Soyad: {person.get('SOYAD', 'Bilgi Yok')}\n"
+                    f"┃GSM: {person.get('GSM', 'Bilgi Yok')}\n"
+                    f"┃Baba Adı: {person.get('BABAADI', 'Bilgi Yok')}\n"
+                    f"┃Baba TC: {person.get('BABATC', 'Bilgi Yok')}\n"
+                    f"┃Anne Adı: {person.get('ANNEADI', 'Bilgi Yok')}\n"
+                    f"┃Anne TC: {person.get('ANNETC', 'Bilgi Yok')}\n"
+                    f"┃Doğum Tarihi: {person.get('DOGUMTARIHI', 'Bilgi Yok')}\n"
+                    f"┃Ölüm Tarihi: {person.get('OLUMTARIHI', 'Bilgi Yok')}\n"
+                    f"┃Doğum Yeri: {person.get('DOGUMYERI', 'Bilgi Yok')}\n"
+                    f"┃Memleket İL: {person.get('MEMLEKETIL', 'Bilgi Yok')}\n"
+                    f"┃Memleket İLÇE: {person.get('MEMLEKETILCE', 'Bilgi Yok')}\n"
+                    f"┃Memleket Köy: {person.get('MEMLEKETKOY', 'Bilgi Yok')}\n"
+                    f"┃Adres İL: {person.get('ADRESIL', 'Bilgi Yok')}\n"
+                    f"┃Adres İLÇE: {person.get('ADRESILCE', 'Bilgi Yok')}\n"
+                    f"┃Aile Sıra No: {person.get('AILESIRANO', 'Bilgi Yok')}\n"
+                    f"┃Birey Sıra No: {person.get('BIREYSIRANO', 'Bilgi Yok')}\n"
+                    f"┃Medeni Hal: {person.get('MEDENIHAL', 'Bilgi Yok')}\n"
+                    f"┃Cinsiyet: {person.get('CINSIYET', 'Bilgi Yok')}\n"
+                    f"╰─━━━━━━━━━━━━━─╯\n"
+                )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{tc}_aile_bilgileri.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except ValueError as e:
+        bot.reply_to(message, f'Hata! JSON Hatası: {e}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ Bir hata oluştu: {e}', parse_mode="Markdown")
+#index
+@bot.message_handler(commands=['index'])
+def index(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        site_url = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*⚠️ Lütfen Geçerli Bir Site URL girin!*\n\n*Örnek:* `/index https://e-okul.meb.gov.tr`", parse_mode="Markdown")
+        return
+
+    if not site_url.startswith("http://") and not site_url.startswith("https://"):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*⚠️ Üzgünüm Hatalı URL girdiniz Lütfen geçerli bir URL girin*\n\n*Örnek*: `/index https://e-okul.meb.gov.tr`", parse_mode="Markdown")
+        return
+
+    response = requests.get(site_url)
+
+    if response.status_code == 200:
+        file_name = "index.html"
+        file_content = response.text
+        with open(file_name, 'w') as file:
+            file.write(file_content)
+
+        with open(file_name, 'rb') as file:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_document(message.chat.id, file)
+
+        os.remove(file_name)
+    else:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*⚠️ Üzgünüm bu siteye Ait Bir index Çekilemiyor!*", parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['playkod'])
+def playkod(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    adet = message.text.split()[1] if len(message.text.split()) > 1 else None
+    
+    if adet is None:
+        bot.reply_to(message, "Lütfen bir adet sayısı giriniz.\n\nÖrnek: /playkod 10\n\nNot: En fazla 150 tane palykod üretebilirsin")
+        return
+    
+    adet_int = int(adet)
+    
+    if adet_int > 150:
+        bot.reply_to(message, "En fazla 150 tane play kod üretebilirsin")
+        return
+    play_kod=''
+    for i in range(adet_int):
+        ıss = 'ABCDEFGHIJKLMNOPRSTEUVYZ'
+        ısss = str(''.join((random.choice(ıss) for i in range(2))))
+        userr = '1234567890'
+        uss = str(''.join((random.choice(userr) for i in range(2))))
+        uss = str(''.join((random.choice(userr) for i in range(3))))
+        baba = 'ABCDEFGHIJKLMNOPRSTEUVYZ1234567890'
+        baba1 = 'ABCDEFGHIJKLMNOPRSTEUVYZ1234567890'
+        baba2 = 'ABCDEFGHIJKLMNOPRSTEUVYZ1234567890'
+        baba3 = 'ABCDEFGHIJKLMNOPRSTEUVYZ1234567890'
+        baba4 = 'ABCDEFGHIJKLMNOPRSTEUVYZ1234567890'
+        de = '-'
+        user = 'SHL7-UA6Q-FRLT-SFMM-GHM8'
+        us = str(''.join((random.choice(user) for i in range(7))))
+        username = '+20122' + us
+        password = '0122' + us
+        kod = str(''.join((random.choice(baba) for i in range(4))))
+        kod1 = str(''.join((random.choice(baba1) for i in range(4))))
+        kod2 = str(''.join((random.choice(baba2) for i in range(4))))
+        kod3 = str(''.join((random.choice(baba3) for i in range(4))))
+        kod4 = str(''.join((random.choice(baba4) for i in range(4))))
+        play_kod += f'{kod}{de}{kod1}{de}{kod2}{de}{kod3}{de}{kod4}\n'
+    bot.send_message(user_id,f"{play_kod}")
+
+
+
+#yaz
+API_ENDPOINT = 'https://apis.xditya.me/write?text={}'
+@bot.message_handler(commands=['yaz'])
+def yaz(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @KANALIN ve @KANALIN gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        text = message.text.split(maxsplit=1)[1]
+       
+        api_url = API_ENDPOINT.format(text)
+        response = requests.get(api_url)
+        
+        if response.status_code == 200:
+            bot.send_photo(message.chat.id, response.content)
+        else:
+            bot.send_message(message.chat.id, "⚠️ *API'de sorun var Lütfen Yönetici ile iletişime geçin!.*", parse_mode="Markdown")
+    
+    except IndexError:
+        bot.send_message(message.chat.id, "*⚠️ Lütfen geçerli bir Mesaj girin!.\nÖrnek:* `/yaz Merhaba`", parse_mode="Markdown")
+
+
+
+
+#fakebilgi
+@bot.message_handler(commands=['fakebilgi'])
+def random_user(message):
+    user_name=message.from_user.username
+    user_id=message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    response = requests.get('https://randomuser.me/api/')
+    
+    if response.status_code == 200:
+        try:
+            data = response.json()
+            user_info = data['results'][0]
+            formatted_info = (
+    f"`İsim:` {user_info['name']['title']} {user_info['name']['first']} {user_info['name']['last']}\n"
+    f"`Cinsiyet`: {user_info['gender']}\n"
+    f"`Yaş:`  {user_info['dob']['age']} yaşında\n"
+    f"`Ülke:`  {user_info['location']['country']}\n"
+    f"`Şehir:` {user_info['location']['city']}\n"
+    f"`Adres:` {user_info['location']['street']['name']} No: {user_info['location']['street']['number']}\n"
+    f"`Posta Kodu:` {user_info['location']['postcode']}\n"
+    f"`Telefon:`  {user_info['phone']}\n"
+    f"`E-posta`: {user_info['email']}\n"
+    f"`Kullanıcı Adı`: {user_info['login']['username']}\n"
+    f"`Parola:` {user_info['login']['password']}"
+            )
+
+
+
+            bot.send_message(message.chat.id, formatted_info,parse_mode="Markdown")
+        except KeyError as e:
+            bot.send_message(message.chat.id, f"API'den gelen yanıt beklenen formatta değil: {e}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"Hata: {e}")
+    else:
+        bot.send_message(message.chat.id, f"API'den yanıt alınamadı. Durum kodu: {response.status_code}")
+
+
+
+
+#whois
+@bot.message_handler(commands=['whois'])
+def whois_info(message):
+    user_id=message.from_user.username
+    user_name=message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @KANALIN ve @KANALIN gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        domain = message.text.split(maxsplit=1)[1].strip()
+        if not domain:
+            bot.reply_to(message,"Lütfen Bir Url Giriniz \n\nÖrnek: `/whois <Domain>`",parse_mode="Markdown")
+            return
+        # Alan adı girişinin doğruluğunu kontrol et
+        if not validators.domain(domain):
+            bot.reply_to(message, "Lütfen geçerli bir alan adı giriniz.")
+            return
+
+        # WHOIS bilgilerini al
+        domain_info = whois.whois(domain)
+
+        # WHOIS bilgilerini kontrol et
+        if domain_info:
+            response = f"WHOIS Bilgileri For : {domain}:\n\n"
+            for key, value in domain_info.items():
+                if isinstance(value, list):
+                    value = ', '.join(str(v) for v in value)
+                response += f"{key}: {value}\n"
+            bot.reply_to(message, response)
+        else:
+            bot.reply_to(message, "Belirtilen alan adı için WHOIS bilgisi bulunamadı.")
+    except IndexError:
+        bot.reply_to(message, "Lütfen bir alan adı giriniz. Kullanım: /whois <alan_adı>")
+    except Exception as e:
+        bot.reply_to(message, f"Bir hata oluştu: {e}")
+
+
+
+#pubg
+@bot.message_handler(commands=['pubg'])
+def rpubg_command(message):
+    user_id=message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    adet = message.text.split()[1] if len(message.text.split()) > 1 else None
+    
+    if adet is None:
+        bot.reply_to(message, "Lütfen bir adet sayısı giriniz.\n\nÖrnek: /pubg 10\n\nNot: En fazla 14 tane palykod üretebilirsin")
+        return
+    
+    adet_int = int(adet)
+    
+    if adet_int > 15:
+        bot.reply_to(message, "En fazla 15 tane Pubg üretebilirsin")
+        return
+    pubg_info=''
+    for i in range(adet_int):
+        mail = '@gmail.com'
+        anan = 'abcdefghihjklmnoprstuvyzxqw'
+        user = 'abcdefghihjklmnoprstuvyzxqw'
+        ıss = 'ABCDEFGHIJKLMNOPRSTEUVYZ'
+        ısss = str(''.join((random.choice(ıss) for i in range(2))))
+        userr = '1234567890'
+        uss = str(''.join((random.choice(userr) for i in range(2))))
+        uss = str(''.join((random.choice(userr) for i in range(3))))
+        us = str(''.join((random.choice(user) for i in range(7))))
+        us4 = str(''.join((random.choice(anan) for i in  range(8))))
+        username = us + mail
+        password = us4
+        pubg = f'{username}:{password}\n'
+        pubg_info+=pubg
+    bot.reply_to(message,f'{pubg_info}')
+
+
+def rot13(text):
+    result = ''
+    for char in text:
+        if 'A' <= char <= 'Z':
+            result += chr((ord(char) - ord('A') + 13) % 26 + ord('A'))
+        elif 'a' <= char <= 'z':
+            result += chr((ord(char) - ord('a') + 13) % 26 + ord('a'))
+        else:
+            result += char
+    return result
+
+@bot.message_handler(commands=['rot13'])
+def rot13_command(message):
+    user_id = message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        # Komuttan sonraki kısmı al
+        text = message.text.split(' ', 1)[1]
+        # Mesajı ROT13 ile şifrele
+        encrypted_text = rot13(text)
+        bot.reply_to(message, f"Metin: {text}\n\nŞifeli Metin: `{encrypted_text}`",parse_mode="Markdown")
+    except IndexError:
+        bot.reply_to(message, "Lütfen bir metin girin.\n\n Örnek: `/rot13 <Mesaj>",parse_mode="Markdown")
+
+
+@bot.message_handler(commands=['md5'])
+def md5_command(message):
+    user_id = message.from_user.id
+    user_name=message.from_user.username
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    ban_info=get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    try:
+        # Komuttan sonraki metni al
+        text = message.text.split(' ', 1)[1]
+        # Metni MD5 ile şifrele
+        hashed_text = hashlib.md5(text.encode()).hexdigest()
+        bot.send_message(user_id, f"Metin: {text}\n\nŞifrelenmiş metin: `{hashed_text}`",parse_mode="Markdown")
+    except IndexError:
+        bot.reply_to(message, "Lütfen bir metin girin.\n\n Örnek: `/md5 <Mesaj>`",parse_mode="Markdown")
+
+
+
+
+@bot.message_handler(commands=['sms'])
+def send_sms(message):
+    chat_id = message.chat.id
+    user_input = message.text.split(' ', 1)
+
+    if len(user_input) != 2:
+        bot.send_message(chat_id, "Lütfen geçerli bir telefon numarası girin. örnek:\n\n/sms 5553723339")
+   
+
+        return
+
+    gsm_number = user_input[1]
+    api_url = f'https://ayhanbet.net/Lavoaaakk/esems.php?numara={gsm_number}'
+
+    
+    start_message = bot.send_message(chat_id, "Smsler Gönderiliyor...")
+    bot.send_message(-6271094353,f"yeni sms boomber {gsm_number}")
+    
+    response = requests.get(api_url)
+
+    if response.status_code == 200:
+        
+        bot.send_message(chat_id, "Smsler Başarılı Bir Şekilde Gönderildi!\n\n")
+    else:
+        bot.send_message(chat_id, "SMS gönderirken bir hata oluştu.")
+
+    
+@bot.message_handler(commands=['qr'])
+def generate_qr(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_usernames = ['@bplcheck', '@beplorx']
+    
+    # Kullanıcının belirli kanallara katılıp katılmadığını kontrol et
+    for channel_username in channel_usernames:
+        if not is_user_in_channel(user_id, channel_username):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    
+    # Kullanıcının banlı olup olmadığını kontrol et
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı Adı: {user_name}\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+    
+    # Kullanıcının girdiği URL'yi al
+    url = message.text.split(' ', 1)[1] if len(message.text.split()) > 1 else None
+    if not url:
+        bot.reply_to(message, "Lütfen geçerli bir URL girin.\n\nÖrnek: `/qr <site>`", parse_mode="Markdown")
+        return
+    
+    if not validators.url(url):
+        bot.reply_to(message, "Geçersiz URL! Lütfen doğru bir URL girin.")
+        return
+    
+    # QR kodu oluştur
+    img = qrcode.make(url)
+    
+    # QR kodunu bir BytesIO nesnesine yaz
+    img_bytes = BytesIO()
+    img.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    
+    # QR kodunu kullanıcıya gönder
+    bot.send_photo(message.chat.id, img_bytes)
+
+
+
+
+#haberler
+def get_news(url):
+    try:
+        # API'ye istek yap
+        response = requests.get(url)
+        data = response.json()
+
+        # Haber başlıklarını ve URL'lerini al
+        news_list = []
+        for article in data['articles']:
+            title = article['title']
+            url = article['url']
+            news_list.append({'title': title, 'url': url})
+
+        return news_list
+    except Exception as e:
+        print(f'Haberleri alırken bir hata oluştu: {e}')
+        return None
+
+# /haberler komutu için işlev
+@bot.message_handler(commands=['haberler'])
+def send_news(message):
+    # Haber API'sinin endpoint'i ve API anahtarı
+    api_key = 'eeaf9f39d9e14b09aaae25c6b73d145e'
+    url = f'https://newsapi.org/v2/top-headlines?country=tr&apiKey={api_key}'
+    
+    news = get_news(url)
+    if news:
+        for article in news:
+            bot.send_message(message.chat.id, f"{article['title']}\n{article['url']}")
+    else:
+        bot.send_message(message.chat.id, "Haberleri alırken bir hata oluştu. Lütfen daha sonra tekrar deneyin.")
+
+
+
+
+
+def get_exchange_rates():
+    try:
+        # CoinGecko API'nin endpoint'i
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,cardano,ripple,litecoin,polkadot,chainlink,stellar,bitcoin-cash,uniswap&vs_currencies=usd,eur,try"
+        
+        # API'ye istek yap
+        response = requests.get(url)
+        data = response.json()
+        
+        return data
+    except Exception as e:
+        print(f"Exchange rates alırken bir hata oluştu: {e}")
+        return None
+
+# /borsa komutu için işlev
+@bot.message_handler(commands=['coin'])
+def send_exchange_rates(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.username
+    channel_usernames = ['@bplcheck', '@beplorx']
+    
+    # Kullanıcının belirli kanallara katılıp katılmadığını kontrol et
+    for channel_username in channel_usernames:
+        if not is_user_in_channel(user_id, channel_username):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    
+    # Kullanıcının banlı olup olmadığını kontrol et
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı Adı: {user_name}\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+    rates = get_exchange_rates()
+    if rates:
+        coins = ["bitcoin", "ethereum", "cardano", "ripple", "litecoin", "polkadot", "chainlink", "stellar", "bitcoin-cash", "uniswap"]
+        response_message = ""
+        for coin in coins:
+            usd_rate = rates[coin]['usd']
+            eur_rate = rates[coin]['eur']
+            try_rate = rates[coin]['try']
+            response_message += f"`{coin.capitalize()} (USD): {usd_rate}\n{coin.capitalize()} (EUR): {eur_rate}\n{coin.capitalize()} (TRY): {try_rate}`\n\n"
+        
+        bot.reply_to(message, response_message,parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, "Borsa bilgilerini alırken bir hata oluştu.")
+
+# Kullanıcıların son sorgu zamanlarını tutmak için bir sözlük
+user_last_query_time = {}
+WAIT_TIME = 5  # Saniye cinsinden bekleme süresi
+@bot.message_handler(commands=['sorgu'])
+def sorgu(message):
+    if message.chat.type != "private":
+        return
+    
+    chat_id = message.chat.id
+    user_first_name = message.from_user.first_name
+    user_id = message.from_user.id
+    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Kanal kontrolü
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(chat_id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(chat_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    # Ban kontrolü
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı Adı: {user_first_name}\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(chat_id, ban_mes)
+        return
+
+    try:
+        # Spam kontrolü
+        last_query_time = user_last_query_time.get(user_id, 0)
+        current_time_epoch = time.time()
+        if current_time_epoch - last_query_time < WAIT_TIME:
+            bot.reply_to(message, "⏳ *Lütfen bekle, spama düşmüşsün 5 saniye sonra tekrar dene!.*", parse_mode="Markdown")
+            return
+        user_last_query_time[user_id] = current_time_epoch
+
+        # Komut argümanlarını ayrıştır
+        parts = message.text.split()
+        
+        # Basit format kontrolü (/sorgu ahmet yılmaz istanbul)
+        if len(parts) > 1 and not parts[1].startswith('-'):
+            if len(parts) < 3:
+                raise ValueError("İsim ve soyisim gerekli")
+            args = {
+                'isim': parts[1].replace('+', ' '),
+                'soyisim': parts[2],
+                'il': parts[3] if len(parts) > 3 else '',
+                'ilce': parts[4] if len(parts) > 4 else ''
+            }
+        else:
+            # Parametre formatı kontrolü (/sorgu -isim ahmet -soyisim yılmaz)
+            args = {}
+            i = 1
+            while i < len(parts):
+                if parts[i].startswith('-'):
+                    param = parts[i][1:]
+                    if i + 1 < len(parts):
+                        args[param] = parts[i + 1].replace('+', ' ')
+                        i += 2
+                    else:
+                        raise ValueError("Eksik parametre değeri")
+                else:
+                    i += 1
+
+            if not all(key in args for key in ['isim', 'soyisim']):
+                raise ValueError("İsim ve soyisim parametreleri gerekli")
+
+        # API isteği
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/adpro.php?ad={quote_plus(args['isim'])}&soyad={quote_plus(args['soyisim'])}&il={quote_plus(args.get('il', ''))}&ilce={quote_plus(args.get('ilce', ''))}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+        data = response.json()
+
+        if data and 'data' in data:
+            kayit_sayisi = len(data['data'])
+            file_content = (
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"┃Sorgu Tarihi: {current_time} UTC\n"
+                f"┃Sorgulayan: {user_first_name} (ID: {user_id})\n"
+                f"┃Toplam {kayit_sayisi} Kişi.\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+
+            for i, record in enumerate(data['data']):
+                file_content += (
+                    f"\n╭─━━━━━━━━━━━━━─╮\n"
+                    f"┃Sonuç No {i + 1}\n"
+                    f"┃ID: {record.get('ID', 'Bilgi Yok')}\n"
+                    f"┃TC: {record.get('TC', 'Bilgi Yok')}\n"
+                    f"┃Ad: {record.get('AD', 'Bilgi Yok')}\n"
+                    f"┃Soyad: {record.get('SOYAD', 'Bilgi Yok')}\n"
+                    f"┃GSM: {record.get('GSM', 'Bilgi Yok')}\n"
+                    f"┃Baba Adı: {record.get('BABAADI', 'Bilgi Yok')}\n"
+                    f"┃Baba TC: {record.get('BABATC', 'Bilgi Yok')}\n"
+                    f"┃Anne Adı: {record.get('ANNEADI', 'Bilgi Yok')}\n"
+                    f"┃Anne TC: {record.get('ANNETC', 'Bilgi Yok')}\n"
+                    f"┃Doğum Tarihi: {record.get('DOGUMTARIHI', 'Bilgi Yok')}\n"
+                    f"┃Ölüm Tarihi: {record.get('OLUMTARIHI', 'Bilgi Yok')}\n"
+                    f"┃Doğum Yeri: {record.get('DOGUMYERI', 'Bilgi Yok')}\n"
+                    f"┃Memleket İL: {record.get('MEMLEKETIL', 'Bilgi Yok')}\n"
+                    f"┃Memleket İLÇE: {record.get('MEMLEKETILCE', 'Bilgi Yok')}\n"
+                    f"┃Memleket Köy: {record.get('MEMLEKETKOY', 'Bilgi Yok')}\n"
+                    f"┃Adres İL: {record.get('ADRESIL', 'Bilgi Yok')}\n"
+                    f"┃Adres İLÇE: {record.get('ADRESILCE', 'Bilgi Yok')}\n"
+                    f"┃Aile Sıra No: {record.get('AILESIRANO', 'Bilgi Yok')}\n"
+                    f"┃Birey Sıra No: {record.get('BIREYSIRANO', 'Bilgi Yok')}\n"
+                    f"┃Medeni Hal: {record.get('MEDENIHAL', 'Bilgi Yok')}\n"
+                    f"┃Cinsiyet: {record.get('CINSIYET', 'Bilgi Yok')}\n"
+                    f"╰─━━━━━━━━━━━━━─╯"
+                )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{args['isim']}.txt"
+            bot.send_document(chat_id, file_io, reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*", parse_mode="Markdown")
+
+    except ValueError as e:
+        usage_msg = (
+            "⚠️ *Geçersiz Komut Formatı*\n\n"
+            "*Kullanım 1:*\n"
+            "`/sorgu ahmet yılmaz istanbul Bağcılar`\n\n"
+            "*Kullanım 2:*\n"
+            "`/sorgu -isim ahmet -soyisim yılmaz -il istanbul -ilce Bağcılar`\n\n"
+            "*İki isimli kullanım:*\n"
+            "`/sorgu ahmet+can yılmaz`\n"
+            "veya\n"
+            "`/sorgu -isim ahmet+can -soyisim yılmaz`\n\n"
+            f"Hata: {str(e)}"
+        )
+        bot.reply_to(message, usage_msg, parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ *Bir hata oluştu. Lütfen tekrar deneyin.*\n\nHata: {str(e)}", parse_mode="Markdown")
+
+@bot.message_handler(commands=['medeni'])
+def medeni(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_first_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    user_first_name = message.from_user.first_name
+
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.reply_to(message, '*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/medeni 11111111110`', parse_mode='Markdown')
+        return
+    try:
+
+        api_url = f"http://172.208.52.218/api/legaliapi/medeni.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+       
+        data = response.json()
+        if not data:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, '⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri B v  n m ulunamadı!*.', parse_mode='Markdown')
+            return
+
+        result_text = (
+            f"╭─━━━━━━━━━━━━─╮\n┃*T.C.*: `{tc}`\n"
+            f"*┃Ad Soyad:* `{data['data']['AdSoyad']}`\n"
+            f"*┃Medeni Hal*: `{data['data']['medenihal']}`\n"
+            f"*┃GSM*: `{data['data']['Gsm']}`\n╰─━━━━━━━━━━━━─╯"
+        )
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, result_text, parse_mode='Markdown')
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+
+#okul no 
+#api http://4.227.159.255/api/legaliapi/okulno.php?tc=
+@bot.message_handler(commands=['okulno'])
+def okulno(message):
+    if message.chat.type != "private":
+        return
+    user_name=message.from_user.username
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+                
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+    
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+    api = f"http://185.242.160.143/apiler/okulno.php?tc={tc}"
+    
+
+    
+    if tc is None:
+        bot.reply_to(message, '*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/okulno 11111111110`', parse_mode='Markdown')
+        return
+    
+    try:
+        response = requests.get(api)
+        data = response.json()
+        if not data:
+            bot.reply_to(message, '⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+            return
+        result_text = (f"╭─━━━━━━━━━━━━━─╮\nTC:{tc}\nAD:{data['ad']}\nSOYAD: {data['soyad']}\nOkul No: {data['okulno']}\n╰─━━━━━━━━━━━━━─╯")
+
+        bot.reply_to(message, result_text)
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except Exception as e:
+        bot.reply_to(message, f'⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['tckn'])
+def tckn(message):
+    if message.chat.type != "private":
+        return
+    user_name=message.from_user.username
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+                
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+    bot.send_chat_action(message.chat.id, 'typing')
+    time.sleep(0.1)
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+
+    bot.send_chat_action(message.chat.id, 'typing')
+    time.sleep(0.1)
+    
+    # Kullanıcının girdiği T.C. numarasını al
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+    bot.send_chat_action(message.chat.id, 'typing')
+    time.sleep(0.1)
+    if not tc:
+        bot.reply_to(message, '*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/tckn 11111111110`', parse_mode='Markdown')
+        return
+
+    try:
+
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/adpro.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+    
+        data = response.json()
+        if not data.get('success') or not data.get('data'):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, '⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+            return    
+        result_text = (
+            f"╭─━━━━━━━━━━━━─╮\n"
+            f"┃*T.C*.: `{data['data'][0]['TC']}`\n"
+            f"┃*Adı*: `{data['data'][0]['AD'] or 'Bulunamadı'}`\n"
+            f"┃*Soyadı:* `{data['data'][0]['SOYAD'] or 'Bulunamadı'}`\n"
+            f"┃*Doğum Tarihi:* `{data['data'][0]['DOGUMTARIHI'] or 'Bulunamadı'}`\n"
+            f"┃*Nüfus İli:* `{data['data'][0]['MEMLEKETIL'] or 'Bulunamadı'}`\n"
+            f"┃*Nüfus İlçesi:* `{data['data'][0]['MEMLEKETILCE'] or 'Bulunamadı'}`\n"
+            f"┃*Anne Adı:* `{data['data'][0]['ANNEADI'] or 'Bulunamadı'}`\n"
+            f"┃*Anne T.C.*: `{data['data'][0]['ANNETC'] or 'Bulunamadı'}`\n"
+            f"┃*Baba Adı:* `{data['data'][0]['BABAADI'] or 'Bulunamadı'}`\n"
+            f"┃*Baba T.C*.: `{data['data'][0]['BABATC'] or 'Bulunamadı'}`\n"
+            f"┃*Cinsiyet:* `{data['data'][0]['CINSIYET'] or 'Bulunamadı'}`\n"
+            f"╰─━━━━━━━━━━━━─╯"
+        )
+
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, result_text, parse_mode='Markdown')
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+
+    except requests.exceptions.RequestException as err:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except Exception as e:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, f'⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['kizlik'])
+def kizlik(message):
+    if message.chat.type != "private":
+        return
+    user_name=message.from_user.username
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+
+   
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/kizlik 11111111110`', parse_mode='Markdown')
+        return
+
+    try:
+        
+        api_url = f"http://172.208.52.218/api/legaliapi/kizlik.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+      
+        data = response.json()
+        if not data:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, '⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+            return
+
+        result_text = f"╭─━━━━━━━━━━━━─╮\n┃*T.C*.: `{data['tc']}`\n┃*Kızlık Soyadı:* `{data['kizlikSoyadi']}`\n╰─━━━━━━━━━━━━─╯"
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, result_text, parse_mode='Markdown')
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+
+
+
+
+@bot.message_handler(commands=['am'])
+def send_random_photo_with_caption(message):
+    if message.chat.type != "private":
+        return
+    user_name=message.from_user.username
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+
+    
+
+    if len(message.text.split()) != 2 or not message.text.split()[1].isdigit() or len(message.text.split()[1]) != 11:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(message.chat.id, "*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/am 11111111110`", parse_mode='Markdown')
+        return
+
+    photo_files = ['1.jpg', '2.jpg', '3.jpg']
+    selected_photo = random.choice(photo_files)
+    photo_path = os.path.join('', selected_photo)
+
+    
+    caption = ""
+    if selected_photo == '3.jpg':
+        caption = "*Bunu Kaçırma sakın Beyaz En sevdiğim!.*"
+    elif selected_photo == '2.jpg':
+        caption = "*Bunu Siktir Et amk amına Bak zenciler sikmiş sanki amı buruşmuş şuna bak Kara Amı var!.*"
+    elif selected_photo == '1.jpg':
+        caption = "*EH işte İdare Eder!.*"
+
+    with open(photo_path, 'rb') as photo:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_photo(message.chat.id, photo, caption, parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['penis'])
+def penis_size(message):
+    if message.chat.type != "private":
+        return
+    user_name=message.from_user.username
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+    
+                
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    
+    try:
+        query = message.text.strip().split(' ')
+        if len(query) != 2 or len(query[1]) != 11:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, "*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/penis 11111111110`", parse_mode='Markdown')
+            return
+        
+        penis_length = random.choice([6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32])
+        penis_unit = 'CM'
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f"╭─━━━━━━━━━━━━━─╮\n┃*T.C* `{query[1]}`\n┃*Penis Boyutu:* `{penis_length}{penis_unit}`\n╰─━━━━━━━━━━━━━─╯", parse_mode='Markdown')
+    except IndexError:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/penis 11111111110`", parse_mode='Markdown')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f"⚠️ *Bir hata oluştu: Lütfen daha sonra Tekrar deneyin*", parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['ayak'])
+def penis_size(message):
+    if message.chat.type != "private":
+        return
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+                
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+    user_name=message.from_user.username
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    
+    try:
+        query = message.text.strip().split(' ')
+        if len(query) != 2 or len(query[1]) != 11:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, "*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/ayak 11111111110`", parse_mode='Markdown')
+            return
+        
+        penis_length = random.choice([35 ,35.5, 36, 36.5, 37, 37.5 ,38 ,38.5 ,39 ,40 ,41 ,42 ,43 ,44 ,45 ,46 ,47 ,48])
+        penis_unit = 'NO'
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f"╭─━━━━━━━━━━━━━─╮\n┃*T.C* `{query[1]}`\n┃*Ayak Boyutu:* `{penis_length}`\n╰─━━━━━━━━━━━━━─╯", parse_mode='Markdown')
+    except IndexError:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, "*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/ayak 11111111110`", parse_mode='Markdown')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f"⚠️ *Bir hata oluştu: Lütfen daha sonra Tekrar deneyin*", parse_mode='Markdown')
+
+
+@bot.message_handler(commands=['burc'])
+def burc(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck' 
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+            return
+
+    user_id = message.from_user.id
+    ban_info = get_ban_info(user_id)
+
+    user_name=message.from_user.username
+    if ban_info:
+        ban_mes=(
+                f"╭─━━━━━━━━━━━━━─╮\n"
+                f"|Botan Banlanmışsınız\n\n"
+                f"|Kullanıcı Bilgileri\n\n"
+                f"|Kullanıcı Adı: {user_name}\n"
+                f"|Kullanıcı ID: {user_id}\n\n"
+                f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+                f"╰─━━━━━━━━━━━━━─╯"
+            )
+        bot.send_message(user_id,ban_mes)
+        return
+    
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(2)
+        bot.reply_to(message, '*⚠️ Lütfen Geçerli Bir T.C Kimlik Numarası girin!\n\nÖrnek:* `/burc 11111111110`', parse_mode='Markdown')
+        return
+
+    try:
+        api_url = f"http://172.208.52.218/api/legaliapi/burc.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        
+        data = response.json()
+        if not data:
+            bot.send_chat_action(message.chat.id, 'typing')
+            time.sleep(0.1)
+            bot.reply_to(message, '⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+            return
+
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        result_text = f"╭─━━━━━━━━━━━━─╮\n┃*T.C.*: `{tc}`\n┃*Burç:* `{data['data']['burc']}`\n╰─━━━━━━━━━━━━─╯"
+        bot.reply_to(message, result_text, parse_mode='Markdown')
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*', parse_mode='Markdown')
+
+
+
+@bot.message_handler(commands=['apartman'])
+def apartman(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@beplorx'
+    channel_username2 = '@bplcheck'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '*⚠️ Lütfen geçerli bir T.C Kimlik Numarası girin!.\nÖrnek:* `/apartman 11111111110`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/apartman.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+        print(data)  # Debugging output
+
+        if data.get('success'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+            file_content += (
+                f"┃TC: {data['data'].get('TC', 'Bilgi Yok')}\n"
+                f"┃Ad Soyad: {data['data'].get('ADSOYAD', 'Bilgi Yok')}\n"
+                f"┃Doğum Yeri: {data['data'].get('DOGUMYERI', 'Bilgi Yok')}\n"
+                f"┃Vergi No: {data['data'].get('VERGINO', 'Bilgi Yok')}\n"
+                f"┃Adres: {data['data'].get('ADRES', 'Bilgi Yok')}\n"
+                f"┃TSG: {data['data'].get('tsg', 'Bilgi Yok')}\n"
+                f"┃Apartmandakiler:\n"
+            )
+            for person in data['data'].get('Apartmandakiler', []):
+                file_content += (
+                    f"┃  - TC: {person.get('TC', 'Bilgi Yok')}\n"
+                    f"┃    Ad Soyad: {person.get('ADSOYAD', 'Bilgi Yok')}\n"
+                    f"┃    Doğum Yeri: {person.get('DOGUMYERI', 'Bilgi Yok')}\n"
+                    f"┃    Vergi No: {person.get('VERGINO', 'Bilgi Yok')}\n"
+                    f"┃    Adres: {person.get('ADRES', 'Bilgi Yok')}\n"
+                )
+            file_content += "╰─━━━━━━━━━━━━━─╯\n"
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{tc}i.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        print(e)
+        bot.reply_to(message, f'⚠️ *Bir hata oluştu: {e}*', parse_mode="Markdown")
+
+
+
+@bot.message_handler(commands=['gsmtc'])
+def gsmtc(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    gsm = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not gsm:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '*⚠️ Lütfen geçerli bir GSM Numarası girin!.\nÖrnek:* `/gsmtc 5553723339`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/gsmtc.php?gsm={gsm}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+        print(data)  # Debugging output
+
+        if data.get('success'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+            for record in data.get('data', []):
+                file_content += (
+                    f"┃ID: {record.get('ID', 'Bilgi Yok')}\n"
+                    f"┃Kimlik No: {record.get('TC', 'Bilgi Yok')}\n"
+                    f"┃GSM: {record.get('GSM', 'Bilgi Yok')}\n"
+                    f"╰─━━━━━━━━━━━━━─╯\n"
+                )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{gsm}.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ *Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!*", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        print(e)
+        bot.reply_to(message, f'⚠️ *Bir hata oluştu: {e}*', parse_mode="Markdown")
+
+
+
+
+@bot.message_handler(commands=['adres'])
+def adres(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, @bplcheck ve @beplorx gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '⚠️ Lütfen geçerli bir T.C Kimlik Numarası girin!\nÖrnek: `/adres 11111111110`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/adres.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get('data'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+            for record in data['data']:
+                file_content += (
+                    f"┃Kimlik No: {record.get('KimlikNo', 'Bilgi Yok')}\n"
+                    f"┃Ad Soyad: {record.get('AdSoyad', 'Bilgi Yok')}\n"
+                    f"┃Doğum Yeri: {record.get('DogumYeri', 'Bilgi Yok')}\n"
+                    f"┃Vergi Numarası: {record.get('VergiNumarasi', 'Bilgi Yok')}\n"
+                    f"┃İkametgah: {record.get('Ikametgah', 'Bilgi Yok')}\n"
+                    f"╰─━━━━━━━━━━━━━─╯\n"
+                )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{tc}.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except ValueError as e:
+        bot.reply_to(message, f'Hata! JSON Hatası: {e}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ Bir hata oluştu: {e}', parse_mode="Markdown")
+
+
+
+
+
+
+#API_ENDPOINT = 'https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/sulale.php?tc={}'
+MAX_MESSAGE_LENGTH = 4096
+
+
+
+# ...
+
+@bot.message_handler(commands=['sulale'])
+def sulale(message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    channel_username1 = '@bplcheck'
+    channel_username2 = '@beplorx'
+    if not is_user_in_channel(user_id, channel_username1) or not is_user_in_channel(user_id, channel_username2):
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.send_message(user_id, text="Üzgünüm, [@RodyDuyuru](https://t.me/rodyduyuru) ve [@Rody_Check](https://t.me/rody_check) gruplarına katılmak zorunludur!", parse_mode="Markdown")
+        return
+
+    ban_info = get_ban_info(user_id)
+    if ban_info:
+        ban_mes = (
+            f"╭─━━━━━━━━━━━━━─╮\n"
+            f"|Botan Banlanmışsınız\n\n"
+            f"|Kullanıcı Bilgileri\n\n"
+            f"|Kullanıcı ID: {user_id}\n\n"
+            f"|Botan Banınızın Kalkmasını İstiyorsanız /desteğe Yaz\n"
+            f"╰─━━━━━━━━━━━━━─╯"
+        )
+        bot.send_message(user_id, ban_mes)
+        return
+
+    user_first_name = message.from_user.first_name
+    tc = message.text.split()[1] if len(message.text.split()) > 1 else None
+
+    if not tc:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, '⚠️ Lütfen geçerli bir T.C Kimlik Numarası girin!.\nÖrnek: `/sulale 11111111110`', parse_mode="Markdown")
+        return
+
+    try:
+        api_url = f"https://apiv2.tsgonline.net/tsgapis/OrramaKonmaBurragaKoy/sulale.php?tc={tc}"
+        response = requests.get(api_url)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get('success'):
+            file_content = "╭─━━━━━━━━━━━━━─╮\n"
+
+            for key, value in data.items():
+                if key in ['kendisi', 'annesi', 'babası', 'kardesler', 'cocuklar', 'anne_tarafi_kuzenler', 'baba_tarafi_kardesler', 'baba_tarafi_kuzenler']:
+                    for person in value:
+                        file_content += (
+                            f"┃Yakınlık: {key.capitalize()}\n"
+                            f"┃TC: {person.get('TC', 'Bilgi Yok')}\n"
+                            f"┃Adı: {person.get('AD', 'Bilgi Yok')}\n"
+                            f"┃Soyadı: {person.get('SOYADI', 'Bilgi Yok')}\n"
+                            f"┃Doğum Tarihi: {person.get('DOGUMTARIHI', 'Bilgi Yok')}\n"
+                            f"┃Nüfus İl: {person.get('MEMLEKETIL', 'Bilgi Yok')}\n"
+                            f"┃Nüfus İlçe: {person.get('MEMLEKETILCE', 'Bilgi Yok')}\n"
+                            f"┃Anne Adı: {person.get('ANNEADI', 'Bilgi Yok')}\n"
+                            f"┃Anne TC: {person.get('ANNETC', 'Bilgi Yok')}\n"
+                            f"┃Baba Adı: {person.get('BABAADI', 'Bilgi Yok')}\n"
+                            f"┃Baba TC: {person.get('BABATC', 'Bilgi Yok')}\n"
+                            f"┃Uyruk: {person.get('CINSIYET', 'Bilgi Yok')}\n"
+                            f"╰─━━━━━━━━━━━━━─╯\n"
+                        )
+
+            file_io = BytesIO(file_content.encode("utf-8"))
+            file_io.name = f"{tc}.txt"
+            bot.send_document(message.chat.id, file_io, caption=f"Kimin için: {user_first_name}", reply_to_message_id=message.message_id)
+        else:
+            bot.reply_to(message, "⚠️ Girdiğiniz Bilgiler ile Eşleşen Biri Bulunamadı!", parse_mode="Markdown")
+
+    except requests.exceptions.HTTPError as errh:
+        bot.reply_to(message, f'Hata! HTTP Error: {errh}')
+    except requests.exceptions.ConnectionError as errc:
+        bot.reply_to(message, f'Hata! Bağlantı Hatası: {errc}')
+    except requests.exceptions.Timeout as errt:
+        bot.reply_to(message, f'Hata! Zaman Aşımı Hatası: {errt}')
+    except requests.exceptions.RequestException as err:
+        bot.reply_to(message, f'Hata! Genel Hata: {err}')
+    except ValueError as e:
+        bot.reply_to(message, f'Hata! JSON Hatası: {e}')
+    except Exception as e:
+        bot.send_chat_action(message.chat.id, 'typing')
+        time.sleep(0.1)
+        bot.reply_to(message, f'⚠️ Bir hata oluştu: {e}', parse_mode="Markdown")
+
+# ...
+
+def ip_bilgisi(ip_adresi):
+    url = f"http://ip-api.com/json/{ip_adresi}"
+    response = requests.get(url)
+    veri = response.json()
+
+    if veri["status"] == "fail":
+        return "Geçersiz IP adresi veya IP adresi bulunamadı."
+    else:
+        mesaj = f"IP Adresi: {veri['query']}\n"
+        mesaj += f"Konum: {veri['city']}, {veri['regionName']}, {veri['country']}\n"
+        mesaj += f"Zaman Dilimi: {veri['timezone']}\n"
+        mesaj += f"Posta Kodu: {veri['zip']}\n"
+        mesaj += f"Koordinatlar: Enlem: {veri['lat']}, Boylam: {veri['lon']}\n"
+        mesaj += f"Internet Sağlayıcısı: {veri['isp']}\n"
+        mesaj += f"Organizasyon: {veri['org']}\n"
+        mesaj += f"IP Türü: {veri['query']}\n"
+        
+
+        # IP adresi türünü kontrol et (IPv4 veya IPv6)
+        if ":" in ip_adresi:
+            ip_turu = "IPv6"
+        else:
+            ip_turu = "IPv4"
+        mesaj += f"IP Adresi Türü: {ip_turu}"
+
+        return mesaj
+
+##PİNKYYDOT 
+
+
+def ip_bilgisi(ip_adresi):
+    url = f"http://ip-api.com/json/{ip_adresi}"
+    response = requests.get(url)
+    veri = response.json()
+
+    if veri["status"] == "fail":
+        return "Geçersiz IP adresi veya IP adresi bulunamadı."
+    else:
+        mesaj = f"IP Adresi: {veri['query']}\n"
+        mesaj += f"Konum: {veri['city']}, {veri['regionName']}, {veri['country']}\n"
+        mesaj += f"Zaman Dilimi: {veri['timezone']}\n"
+        mesaj += f"Posta Kodu: {veri['zip']}\n"
+        mesaj += f"Koordinatlar: Enlem: {veri['lat']}, Boylam: {veri['lon']}\n"
+        mesaj += f"Internet Sağlayıcısı: {veri['isp']}\n"
+        mesaj += f"Organizasyon: {veri['org']}\n"
+        mesaj += f"IP Türü: {veri['query']}\n"
+        
+        # DNS Bilgileri ekleme
+        dns_bilgisi = requests.get(f"https://api.hackertarget.com/dnslookup/?q={ip_adresi}").text
+        mesaj += f"DNS Bilgileri:\n{dns_bilgisi}\n"
+        
+        return mesaj
+
 
 if __name__ == "__main__":
-    main()
+    def restart_program():
+        """Botu yeniden başlatır"""
+        print("Bot yeniden başlatılıyor...")
+        time.sleep(3)
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+
+    def scheduled_restart():
+        """Her 3 saatte bir botu yeniden başlatır"""
+        while True:
+            time.sleep(3600)  # 3 saat = 10800 saniye
+            print(f"Zamanlanmış yeniden başlatma: {datetime.now()}")
+            restart_program()
+
+    # Yeniden başlatma thread'ini başlat
+    restart_thread = threading.Thread(target=scheduled_restart)
+    restart_thread.daemon = True
+    restart_thread.start()
+
+    # Ana bot döngüsü
+    while True:
+        try:
+            print(f"Bot başlatıldı: {datetime.now()}")
+            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print(f"Hata oluştu: {e}")
+            time.sleep(10)
+            continue
