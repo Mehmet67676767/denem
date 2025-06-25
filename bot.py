@@ -20,7 +20,7 @@ from datetime import datetime
 import threading
 
 
-token='8048886705:AAFpNgwG8QjyUkx5ryS31M05_Z0y-TvIQu0'
+token='8099158905:AAH76RL2r-3SZUpQjUgr-6oLwkQN5ayqJPE'
 
 bot = telebot.TeleBot(token)
 
@@ -88,7 +88,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-admins={7067213241,7521657471}
+admins={7761986875,7521657471}
 
 
 """
